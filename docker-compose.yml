@@ -1,0 +1,14 @@
+services:
+  dev:
+    build: .
+    platform: linux/amd64
+    container_name: spfresh-dev
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    stdin_open: true # Equivalent to -i
+    tty: true        # Equivalent to -t
+    security_opt:    # Allows GDB debugging inside the container
+      - seccomp:unconfined
+    cap_add:
+      - SYS_PTRACE
