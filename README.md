@@ -12,6 +12,10 @@ Run the following command from the root of the repository:
 ```bash
 docker build -t sptag .
 ```
+If you are using an Apple Silicon Mac, run the following command instead. This forces Docker to build an x86_64 image via emulation, which is necessary because SPTAG’s CMake configuration includes x86-specific SIMD compiler flags.
+```bash
+docker build --platform=linux/amd64 -t sptag .
+```
 
 This may take 10-15 minutes as it compiles the core C++ library.
 
@@ -37,6 +41,28 @@ The SPTAG.py and associated .so files are already in the Release folder. You can
 export PYTHONPATH=$PYTHONPATH:/app/Release
 python3 your_script.py
 ```
+#### Troubleshooting
+
+If you do not see the `/Release` folder after entering the container, it likely means the project has not been compiled yet.
+
+Follow these steps inside the container:
+
+Step 1: Create the build directory and configure
+```
+export CC=/usr/bin/gcc-8
+export CXX=/usr/bin/g++-8
+mkdir -p build
+cd build
+cmake ..
+```
+
+Step 2: Compile the project
+(`-j$(nproc)` — this may consume too much memory and cause the build to fail.)
+```
+make -j2
+```
+
+After the build completes successfully, the Release folder will be generated automatically, and the compiled binaries (including the Python .so files) will appear there.
 
 ### C++ Development and Recompiling
 If you modify the C++ source code in the AnnService or Wrappers directories, you must recompile. Because of the volume mount, you do this inside the container using the container's tools:
