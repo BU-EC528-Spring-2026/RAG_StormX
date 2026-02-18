@@ -30,7 +30,7 @@ nano Dockerfile
 ```
 Find the last `RUN` line and change `make -j` to `make-j2` or `make -j4`:
 ```dockerfile
-RUN export CC=/usr/bin/gcc-8 && export CXX=/usr/bin/g++-8 && mkdir build && cd build && cmake .. && make -j2 && cd ..
+RUN export CC=/usr/bin/gcc-9 && export CXX=/usr/bin/g++-9 && mkdir build && cd build && cmake .. && make -j2 && cd ..
 ```
 Press **Ctrl+O** to save, **Ctrl+X** to exit. Then re-run the build command.
 
