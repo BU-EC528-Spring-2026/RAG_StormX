@@ -16,6 +16,23 @@ If you are using an Apple Silicon Mac, run the following command instead. This f
 ```bash
 docker build --platform=linux/amd64 -t sptag .
 ```
+**Troubleshooting for Mac M-Series chips (if build fails with OOM error):**
+
+**Step 1: Increase Docker memory limit**
+
+Open Docker Desktop → Settings → Resources, set Memory Limit to at least **16 GB**（depending on your laptop performance), then click **Apply** and restart Docker.
+
+**Step 2: Limit compiler parallelism in Dockerfile**
+
+Navigate to the SPTAG directory in terminal and edit the Dockerfile:
+```bash
+nano Dockerfile
+```
+Find the last `RUN` line and change `make -j` to `make-j2` or `make -j4`:
+```dockerfile
+RUN export CC=/usr/bin/gcc-8 && export CXX=/usr/bin/g++-8 && mkdir build && cd build && cmake .. && make -j2 && cd ..
+```
+Press **Ctrl+O** to save, **Ctrl+X** to exit. Then re-run the build command.
 
 This may take 10-15 minutes as it compiles the core C++ library.
 
