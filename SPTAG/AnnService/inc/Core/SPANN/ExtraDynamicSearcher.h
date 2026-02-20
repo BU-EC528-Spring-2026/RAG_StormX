@@ -16,6 +16,7 @@
 #include "PersistentBuffer.h"
 #include "inc/Core/Common/PostingSizeRecord.h"
 #include "ExtraFileController.h"
+#include "inc/Helper/TiKVKeyValueIO.h"
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -237,7 +238,27 @@ namespace SPTAG::SPANN {
                 return;
 #endif
             }
+	    
+	    else if (p_opt.m_storage == Storage::TIKVIO) {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ExtraDynamicSearcher:UseTiKV\n");
+                
+                std::string udsPath = "/tmp/sptag_tikv.sock";
+                size_t cacheMB = 1024; 
 
+                if (const char* envPath = std::getenv("SPTAG_TIKV_UDS")) {
+                    udsPath = envPath;
+                }
+                if (const char* envCache = std::getenv("SPTAG_TIKV_CACHE_MB")) {
+                    try {
+                        cacheMB = std::stoull(envCache);
+                    } catch (...) {
+                        cacheMB = 1024; 
+                    }
+                }
+                
+                size_t cacheBytes = cacheMB * 1024 * 1024;
+                db.reset(new TiKVKeyValueIO(udsPath, cacheBytes));
+            }
             
             m_hardLatencyLimit = std::chrono::microseconds((int)(p_opt.m_latencyLimit) * 1000);
             m_mergeThreshold = p_opt.m_mergeThreshold;

@@ -4,6 +4,14 @@
 set(AnnService ${PROJECT_SOURCE_DIR}/AnnService)
 set(Zstd ${PROJECT_SOURCE_DIR}/ThirdParty/zstd)
 
+############# TIKV
+set(TIKV_INCLUDE_DIR "/path/to/your/tikv_client/include")
+set(TIKV_LIBRARIES "/path/to/your/tikv_client/lib/libtikv_client.a") # Add gRPC/Protobuf libs here too if needed
+
+include_directories(${TIKV_INCLUDE_DIR})
+############# TIKV
+
+
 include_directories(${AnnService})
 include_directories(${Zstd}/lib)
 
