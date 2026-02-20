@@ -257,7 +257,7 @@ namespace SPTAG::SPANN {
                 }
                 
                 size_t cacheBytes = cacheMB * 1024 * 1024;
-                db.reset(new TiKVKeyValueIO(udsPath, cacheBytes));
+                db.reset(new Helper::TiKVKeyValueIO(udsPath, cacheBytes));
             }
             
             m_hardLatencyLimit = std::chrono::microseconds((int)(p_opt.m_latencyLimit) * 1000);
