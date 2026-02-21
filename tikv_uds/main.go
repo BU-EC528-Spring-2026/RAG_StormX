@@ -118,7 +118,9 @@ func (sv *server) handleConn(c net.Conn) {
 		op := binary.LittleEndian.Uint16(hdr[4:6])
 		reqID := binary.LittleEndian.Uint64(hdr[8:16])
 		timeoutUS := binary.LittleEndian.Uint64(hdr[16:24])
-		
+		fmt.Printf("Received reqID: %d, raw timeoutUS: %d\n", reqID, timeoutUS)
+
+
 		const maxSafeUS = 9223372036854775 
 
 		if timeoutUS >= maxSafeUS {
@@ -127,12 +129,6 @@ func (sv *server) handleConn(c net.Conn) {
 			deadline := time.Now().Add(time.Duration(timeoutUS) * time.Microsecond)
 			_ = c.SetDeadline(deadline)
 		}
-
-		fmt.Printf("Received reqID: %d, raw timeoutUS: %d\n", reqID, timeoutUS)
-		deadline := time.Now().Add(time.Duration(timeoutUS) * time.Microsecond)
-		fmt.Printf("Calculated deadline: %v\n", deadline)
-
-		_ = c.SetDeadline(deadline)
 
 		switch op {
 		case opHealth:
