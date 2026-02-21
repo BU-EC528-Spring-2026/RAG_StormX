@@ -118,8 +118,20 @@ func (sv *server) handleConn(c net.Conn) {
 		op := binary.LittleEndian.Uint16(hdr[4:6])
 		reqID := binary.LittleEndian.Uint64(hdr[8:16])
 		timeoutUS := binary.LittleEndian.Uint64(hdr[16:24])
+		
+		const maxSafeUS = 9223372036854775 
 
+		if timeoutUS >= maxSafeUS {
+			_ = c.SetDeadline(time.Time{})
+		} else {
+			deadline := time.Now().Add(time.Duration(timeoutUS) * time.Microsecond)
+			_ = c.SetDeadline(deadline)
+		}
+
+		fmt.Printf("Received reqID: %d, raw timeoutUS: %d\n", reqID, timeoutUS)
 		deadline := time.Now().Add(time.Duration(timeoutUS) * time.Microsecond)
+		fmt.Printf("Calculated deadline: %v\n", deadline)
+
 		_ = c.SetDeadline(deadline)
 
 		switch op {
@@ -188,7 +200,16 @@ func (sv *server) handleGet(r *bufio.Reader, w *bufio.Writer, reqID uint64, time
 	}
 	fullKey := sv.keyWithNS(keyBuf)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutUS)*time.Microsecond)
+	var ctx context.Context
+	var cancel context.CancelFunc
+
+	if timeoutUS >= 9223372036854775 {
+		ctx, cancel = context.WithCancel(context.Background()) // No timeout
+	} else {
+		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(timeoutUS)*time.Microsecond)
+	}
+	defer cancel()	
+
 	defer cancel()
 
 	val, err := sv.cli.Get(ctx, fullKey)
