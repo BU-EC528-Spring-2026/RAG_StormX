@@ -4,6 +4,7 @@
 #include "inc/Core/SPANN/ExtraFileController.h"
 #include "inc/Core/SPANN/IExtraSearcher.h"
 #include "inc/Test.h"
+#include "inc/Helper/TiKVKeyValueIO.h"
 #include <chrono>
 #include <memory>
 
@@ -84,6 +85,12 @@ void Test(std::string path, std::string type, bool debug = false)
         }
 #endif
     }
+
+    else if (type == "TiKV") 
+    {
+    	db.reset(new Helper::TiKVKeyValueIO("/tmp/sptag_tikv.sock", 10*1024*1024));
+    }
+
     else
     {
         db.reset(new FileIO(opt));
@@ -94,7 +101,10 @@ void Test(std::string path, std::string type, bool debug = false)
     {
         int len = std::to_string(i).length();
         std::string val(PageSize - len, '0');
-        db->Put(i, val, MaxTimeout, &(workspace.m_diskRequests));
+        
+	if (db->Put(i, val, MaxTimeout, &(workspace.m_diskRequests)) != ErrorCode::Success) {
+            std::cerr << "TiKV Put operation failed on key: " << i << std::endl;
+        }	
     }
     auto t2 = std::chrono::high_resolution_clock::now();
     std::cout << "avg put time: "
@@ -108,9 +118,11 @@ void Test(std::string path, std::string type, bool debug = false)
     {
         for (int j = 0; j < mergeIters; j++)
         {
-            db->Merge(i, std::to_string(i), MaxTimeout, &(workspace.m_diskRequests),
-                      [](const void* val, const int size) -> bool { return true; });
-        }
+            if (db->Merge(i, std::to_string(i), MaxTimeout, &(workspace.m_diskRequests),
+                      [](const void* val, const int size) -> bool { return true; }) != ErrorCode::Success) {
+                std::cerr << "TiKV Merge operation failed on key: " << i << std::endl;
+            }
+	}
     }
     t2 = std::chrono::high_resolution_clock::now();
     std::cout << "avg merge time: "
@@ -152,6 +164,12 @@ BOOST_AUTO_TEST_CASE(FileTest)
     if (!direxists("tmp_file"))
         mkdir("tmp_file");
     Test(std::string("tmp_file") + FolderSep + "test", "File", false);
+}
+
+
+BOOST_AUTO_TEST_CASE(TiKVTest)
+{
+    Test(std::string("tmp_tikv") + FolderSep + "test", "TiKV", false);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
