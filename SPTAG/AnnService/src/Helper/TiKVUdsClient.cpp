@@ -73,7 +73,8 @@ bool TiKVUdsClient::EnsureConnected() {
     strncpy(addr.sun_path, m_udsPath.c_str(), sizeof(addr.sun_path)-1);
 
     if (::connect(m_fd, (sockaddr*)&addr, sizeof(addr)) < 0) {
-        ::close(m_fd);
+        std::cerr << "TiKV UDS Connect Failed: " << strerror(errno) << " (errno " << errno << ")\n"; 
+	::close(m_fd);
         m_fd = -1;
         return false;
     }
