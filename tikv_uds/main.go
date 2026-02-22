@@ -120,14 +120,15 @@ func (sv *server) handleConn(c net.Conn) {
 		timeoutUS := binary.LittleEndian.Uint64(hdr[16:24])
 		fmt.Printf("Received reqID: %d, raw timeoutUS: %d\n", reqID, timeoutUS)
 
-
 		const maxSafeUS = 9223372036854775 
 
 		if timeoutUS >= maxSafeUS {
 			_ = c.SetDeadline(time.Time{})
+			fmt.Printf("Calculated deadline: INFINITE\n")
 		} else {
 			deadline := time.Now().Add(time.Duration(timeoutUS) * time.Microsecond)
 			_ = c.SetDeadline(deadline)
+			fmt.Printf("Calculated deadline: %v\n", deadline)
 		}
 
 		switch op {
@@ -249,7 +250,13 @@ func (sv *server) handleMultiGet(r *bufio.Reader, w *bufio.Writer, reqID uint64,
 		keysRaw[i] = sv.keyWithNS(k)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutUS)*time.Microsecond)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeoutUS >= 9223372036854775 {
+		ctx, cancel = context.WithCancel(context.Background())
+	} else {
+		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(timeoutUS)*time.Microsecond)
+	}
 	defer cancel()
 
 	results := make([][]byte, n)
@@ -331,7 +338,13 @@ func (sv *server) handlePut(r *bufio.Reader, w *bufio.Writer, reqID uint64, time
 
 	fullKey := sv.keyWithNS(keyBuf)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutUS)*time.Microsecond)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeoutUS >= 9223372036854775 {
+		ctx, cancel = context.WithCancel(context.Background())
+	} else {
+		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(timeoutUS)*time.Microsecond)
+	}
 	defer cancel()
 
 	if err := sv.cli.Put(ctx, fullKey, val); err != nil {
@@ -350,7 +363,13 @@ func (sv *server) handleDelete(r *bufio.Reader, w *bufio.Writer, reqID uint64, t
 	}
 	fullKey := sv.keyWithNS(keyBuf)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutUS)*time.Microsecond)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeoutUS >= 9223372036854775 {
+		ctx, cancel = context.WithCancel(context.Background())
+	} else {
+		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(timeoutUS)*time.Microsecond)
+	}
 	defer cancel()
 
 	if err := sv.cli.Delete(ctx, fullKey); err != nil {
@@ -394,6 +413,28 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+
+	// --- DIRECT TIKV TEST ---
+	fmt.Println("Testing direct rawkv connection to TiKV cluster...")
+	testCtx, cancel := context.WithTimeout(context.Background(), 3 * time.Second)
+
+	err = cli.Put(testCtx, []byte("spann:test_key"), []byte("test_value"))
+	if err != nil {
+		fmt.Printf("FATAL TIKV ERROR: %v\n", err)
+	} else {
+		fmt.Println("SUCCESS: TiKV cluster is healthy and accepted the write!")
+
+		val, err := cli.Get(testCtx, []byte("spann:test_key"))
+		if err != nil {
+			fmt.Printf("FATAL TIKV GET ERROR: %v\n", err)
+		} else {
+			fmt.Printf("SUCCESS: Read back value: %s\n", string(val))
+		}
+	}
+	cancel()
+	// ------------------------
+
 
 	sv := &server{
 		cli:         cli,
