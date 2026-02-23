@@ -318,11 +318,19 @@ int32_t TiKVUdsClient::SendRequestAndWait(uint64_t rid, const std::vector<uint8_
     }
     m_sendCv.notify_one();
 
-    if (f.wait_for(timeout) == std::future_status::timeout)
+    // Prevent std::future::wait_for overflow if timeout is extremely huge
+    if (timeout.count() > 3600ULL * 1000000 * 24 * 365) // > 1 year
     {
-        std::lock_guard<std::mutex> g(m_pendingMu);
-        m_pendingRequests.erase(rid);
-        return 2;
+        f.wait();
+    }
+    else
+    {
+        if (f.wait_for(timeout) == std::future_status::timeout)
+        {
+            std::lock_guard<std::mutex> g(m_pendingMu);
+            m_pendingRequests.erase(rid);
+            return 2;
+        }
     }
 
     out = f.get();
@@ -436,7 +444,18 @@ int32_t TiKVUdsClient::PutU64(uint64_t key, const std::string &value, const std:
     }
 
     ResponsePayload out;
-    return SendRequestAndWait(rid, req, out, timeout);
+    int32_t st = SendRequestAndWait(rid, req, out, timeout);
+    if (st != 0)
+    {
+        std::cerr << "[TiKVUdsClient] PutU64 failed with status: " << st;
+        if (!out.data.empty())
+        {
+            std::string errMsg((const char *)out.data.data(), out.data.size());
+            std::cerr << " message: " << errMsg;
+        }
+        std::cerr << std::endl;
+    }
+    return st;
 }
 
 int32_t TiKVUdsClient::DeleteU64(uint64_t key, const std::chrono::microseconds &timeout)
