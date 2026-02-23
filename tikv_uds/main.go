@@ -1,4 +1,5 @@
 package main
+
 import (
 	"bufio"
 	"context"
@@ -36,11 +37,11 @@ const (
 	statusError    int32 = 3
 )
 
-type server struct { 			// state for the sidecar
-	cli         *rawkv.Client 	// Holds the active connection client to the TiKV cluster
-	namespace   []byte 		// Stores a prefix added to all keys to prevent collisions in TiKV
-	maxBatch    int 		// Stores the maximum number of keys to request in a single TiKV batch
-	workerLimit chan struct{} 	// Buffered channel acting as a semaphore to limit concurrency issues 
+type server struct { // state for the sidecar
+	cli         *rawkv.Client // Holds the active connection client to the TiKV cluster
+	namespace   []byte        // Stores a prefix added to all keys to prevent collisions in TiKV
+	maxBatch    int           // Stores the maximum number of keys to request in a single TiKV batch
+	workerLimit chan struct{} // Buffered channel acting as a semaphore to limit concurrency issues
 }
 
 func getenvDefault(key, def string) string {
@@ -102,9 +103,11 @@ func (sv *server) handleConn(c net.Conn) {
 
 	r := bufio.NewReaderSize(c, 4<<20)
 	w := bufio.NewWriterSize(c, 4<<20)
+	var writeMu sync.Mutex
 
 	hdr := make([]byte, 24) // magic(4) op(2) flags(2) reqid(8) timeout_us(8)
 	for {
+		_ = c.SetDeadline(time.Time{})
 		if err := readFull(r, hdr); err != nil {
 			if errors.Is(err, io.EOF) {
 				return
@@ -118,50 +121,79 @@ func (sv *server) handleConn(c net.Conn) {
 		op := binary.LittleEndian.Uint16(hdr[4:6])
 		reqID := binary.LittleEndian.Uint64(hdr[8:16])
 		timeoutUS := binary.LittleEndian.Uint64(hdr[16:24])
-		fmt.Printf("Received reqID: %d, raw timeoutUS: %d\n", reqID, timeoutUS)
-
-		const maxSafeUS = 9223372036854775 
-
-		if timeoutUS >= maxSafeUS {
-			_ = c.SetDeadline(time.Time{})
-			fmt.Printf("Calculated deadline: INFINITE\n")
-		} else {
-			deadline := time.Now().Add(time.Duration(timeoutUS) * time.Microsecond)
-			_ = c.SetDeadline(deadline)
-			fmt.Printf("Calculated deadline: %v\n", deadline)
-		}
 
 		switch op {
 		case opHealth:
-			sv.writeStatus(w, reqID, statusOK, nil)
-			if err := w.Flush(); err != nil {
-				return
-			}
-			continue
-		case opGet:
-			if err := sv.handleGet(r, w, reqID, timeoutUS); err != nil {
-				return
-			}
-		case opMultiGet:
-			if err := sv.handleMultiGet(r, w, reqID, timeoutUS); err != nil {
-				return
-			}
-		case opPut:
-			if err := sv.handlePut(r, w, reqID, timeoutUS); err != nil {
-				return
-			}
-		case opDelete:
-			if err := sv.handleDelete(r, w, reqID, timeoutUS); err != nil {
-				return
-			}
-		default:
-			_ = sv.writeStatus(w, reqID, statusError, []byte("unknown op"))
-			_ = w.Flush()
-			return
-		}
+			go func(rid uint64) {
+				sv.syncWriteStatus(w, &writeMu, rid, statusOK, nil)
+			}(reqID)
 
-		if err := w.Flush(); err != nil {
-			return
+		case opGet:
+			keyBuf := make([]byte, 8)
+			if err := readFull(r, keyBuf); err != nil {
+				return
+			}
+			go func(rid, timeout uint64, k []byte) {
+				sv.handleGet(w, &writeMu, rid, timeout, k)
+			}(reqID, timeoutUS, keyBuf)
+
+		case opMultiGet:
+			nBuf := make([]byte, 4)
+			if err := readFull(r, nBuf); err != nil {
+				return
+			}
+			n := int(binary.LittleEndian.Uint32(nBuf))
+			if n < 0 || n > 1_000_000 {
+				_ = c.Close()
+				return
+			}
+			var keysRaw []byte
+			if n > 0 {
+				keysRaw = make([]byte, n*8)
+				if err := readFull(r, keysRaw); err != nil {
+					return
+				}
+			}
+			go func(rid, timeout uint64, count int, kr []byte) {
+				sv.handleMultiGet(w, &writeMu, rid, timeout, count, kr)
+			}(reqID, timeoutUS, n, keysRaw)
+
+		case opPut:
+			keyBuf := make([]byte, 8)
+			if err := readFull(r, keyBuf); err != nil {
+				return
+			}
+			vlenBuf := make([]byte, 4)
+			if err := readFull(r, vlenBuf); err != nil {
+				return
+			}
+			vlen := int(binary.LittleEndian.Uint32(vlenBuf))
+			if vlen < 0 || vlen > (512<<20) {
+				return
+			}
+			val := make([]byte, vlen)
+			if vlen > 0 {
+				if err := readFull(r, val); err != nil {
+					return
+				}
+			}
+			go func(rid, timeout uint64, k, v []byte) {
+				sv.handlePut(w, &writeMu, rid, timeout, k, v)
+			}(reqID, timeoutUS, keyBuf, val)
+
+		case opDelete:
+			keyBuf := make([]byte, 8)
+			if err := readFull(r, keyBuf); err != nil {
+				return
+			}
+			go func(rid, timeout uint64, k []byte) {
+				sv.handleDelete(w, &writeMu, rid, timeout, k)
+			}(reqID, timeoutUS, keyBuf)
+
+		default:
+			go func(rid uint64) {
+				sv.syncWriteStatus(w, &writeMu, rid, statusError, []byte("unknown op"))
+			}(reqID)
 		}
 	}
 }
@@ -190,11 +222,14 @@ func (sv *server) writeStatus(w *bufio.Writer, reqID uint64, st int32, payload [
 	return nil
 }
 
-func (sv *server) handleGet(r *bufio.Reader, w *bufio.Writer, reqID uint64, timeoutUS uint64) error {
-	keyBuf := make([]byte, 8)
-	if err := readFull(r, keyBuf); err != nil {
-		return err
-	}
+func (sv *server) syncWriteStatus(w *bufio.Writer, mu *sync.Mutex, reqID uint64, st int32, payload []byte) {
+	mu.Lock()
+	defer mu.Unlock()
+	_ = sv.writeStatus(w, reqID, st, payload)
+	_ = w.Flush()
+}
+
+func (sv *server) handleGet(w *bufio.Writer, mu *sync.Mutex, reqID uint64, timeoutUS uint64, keyBuf []byte) {
 	fullKey := sv.keyWithNS(keyBuf)
 
 	var ctx context.Context
@@ -205,48 +240,42 @@ func (sv *server) handleGet(r *bufio.Reader, w *bufio.Writer, reqID uint64, time
 	} else {
 		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(timeoutUS)*time.Microsecond)
 	}
-	defer cancel()	
-
 	defer cancel()
 
+	sv.workerLimit <- struct{}{}
 	val, err := sv.cli.Get(ctx, fullKey)
+	<-sv.workerLimit
+
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return sv.writeStatus(w, reqID, statusTimeout, []byte("timeout"))
+			sv.syncWriteStatus(w, mu, reqID, statusTimeout, []byte("timeout"))
+			return
 		}
-		return sv.writeStatus(w, reqID, statusError, []byte(err.Error()))
+		sv.syncWriteStatus(w, mu, reqID, statusError, []byte(err.Error()))
+		return
 	}
 	if val == nil {
-		return sv.writeStatus(w, reqID, statusNotFound, nil)
+		sv.syncWriteStatus(w, mu, reqID, statusNotFound, nil)
+		return
 	}
 
 	payload := make([]byte, 4+len(val))
 	binary.LittleEndian.PutUint32(payload[0:4], uint32(len(val)))
 	copy(payload[4:], val)
-	return sv.writeStatus(w, reqID, statusOK, payload)
+	sv.syncWriteStatus(w, mu, reqID, statusOK, payload)
 }
 
-func (sv *server) handleMultiGet(r *bufio.Reader, w *bufio.Writer, reqID uint64, timeoutUS uint64) error {
-	nBuf := make([]byte, 4)
-	if err := readFull(r, nBuf); err != nil {
-		return err
-	}
-	n := int(binary.LittleEndian.Uint32(nBuf))
-	if n < 0 || n > 1_000_000 {
-		return sv.writeStatus(w, reqID, statusError, []byte("invalid n"))
-	}
+func (sv *server) handleMultiGet(w *bufio.Writer, mu *sync.Mutex, reqID uint64, timeoutUS uint64, n int, keysRawBytes []byte) {
 	if n == 0 {
 		payload := make([]byte, 4)
 		binary.LittleEndian.PutUint32(payload[0:4], 0)
-		return sv.writeStatus(w, reqID, statusOK, payload)
+		sv.syncWriteStatus(w, mu, reqID, statusOK, payload)
+		return
 	}
 
 	keysRaw := make([][]byte, n)
 	for i := 0; i < n; i++ {
-		k := make([]byte, 8)
-		if err := readFull(r, k); err != nil {
-			return err
-		}
+		k := keysRawBytes[i*8 : (i+1)*8]
 		keysRaw[i] = sv.keyWithNS(k)
 	}
 
@@ -284,9 +313,11 @@ func (sv *server) handleMultiGet(r *bufio.Reader, w *bufio.Writer, reqID uint64,
 		}()
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
-				return sv.writeStatus(w, reqID, statusTimeout, []byte("timeout"))
+				sv.syncWriteStatus(w, mu, reqID, statusTimeout, []byte("timeout"))
+				return
 			}
-			return sv.writeStatus(w, reqID, statusError, []byte(err.Error()))
+			sv.syncWriteStatus(w, mu, reqID, statusError, []byte(err.Error()))
+			return
 		}
 	}
 
@@ -313,29 +344,10 @@ func (sv *server) handleMultiGet(r *bufio.Reader, w *bufio.Writer, reqID uint64,
 			off++
 		}
 	}
-	return sv.writeStatus(w, reqID, statusOK, payload)
+	sv.syncWriteStatus(w, mu, reqID, statusOK, payload)
 }
 
-func (sv *server) handlePut(r *bufio.Reader, w *bufio.Writer, reqID uint64, timeoutUS uint64) error {
-	keyBuf := make([]byte, 8)
-	if err := readFull(r, keyBuf); err != nil {
-		return err
-	}
-	vlenBuf := make([]byte, 4)
-	if err := readFull(r, vlenBuf); err != nil {
-		return err
-	}
-	vlen := int(binary.LittleEndian.Uint32(vlenBuf))
-	if vlen < 0 || vlen > (512<<20) {
-		return sv.writeStatus(w, reqID, statusError, []byte("invalid vlen"))
-	}
-	val := make([]byte, vlen)
-	if vlen > 0 {
-		if err := readFull(r, val); err != nil {
-			return err
-		}
-	}
-
+func (sv *server) handlePut(w *bufio.Writer, mu *sync.Mutex, reqID uint64, timeoutUS uint64, keyBuf []byte, val []byte) {
 	fullKey := sv.keyWithNS(keyBuf)
 
 	var ctx context.Context
@@ -347,20 +359,22 @@ func (sv *server) handlePut(r *bufio.Reader, w *bufio.Writer, reqID uint64, time
 	}
 	defer cancel()
 
-	if err := sv.cli.Put(ctx, fullKey, val); err != nil {
+	sv.workerLimit <- struct{}{}
+	err := sv.cli.Put(ctx, fullKey, val)
+	<-sv.workerLimit
+
+	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return sv.writeStatus(w, reqID, statusTimeout, []byte("timeout"))
+			sv.syncWriteStatus(w, mu, reqID, statusTimeout, []byte("timeout"))
+			return
 		}
-		return sv.writeStatus(w, reqID, statusError, []byte(err.Error()))
+		sv.syncWriteStatus(w, mu, reqID, statusError, []byte(err.Error()))
+		return
 	}
-	return sv.writeStatus(w, reqID, statusOK, nil)
+	sv.syncWriteStatus(w, mu, reqID, statusOK, nil)
 }
 
-func (sv *server) handleDelete(r *bufio.Reader, w *bufio.Writer, reqID uint64, timeoutUS uint64) error {
-	keyBuf := make([]byte, 8)
-	if err := readFull(r, keyBuf); err != nil {
-		return err
-	}
+func (sv *server) handleDelete(w *bufio.Writer, mu *sync.Mutex, reqID uint64, timeoutUS uint64, keyBuf []byte) {
 	fullKey := sv.keyWithNS(keyBuf)
 
 	var ctx context.Context
@@ -372,13 +386,19 @@ func (sv *server) handleDelete(r *bufio.Reader, w *bufio.Writer, reqID uint64, t
 	}
 	defer cancel()
 
-	if err := sv.cli.Delete(ctx, fullKey); err != nil {
+	sv.workerLimit <- struct{}{}
+	err := sv.cli.Delete(ctx, fullKey)
+	<-sv.workerLimit
+
+	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return sv.writeStatus(w, reqID, statusTimeout, []byte("timeout"))
+			sv.syncWriteStatus(w, mu, reqID, statusTimeout, []byte("timeout"))
+			return
 		}
-		return sv.writeStatus(w, reqID, statusError, []byte(err.Error()))
+		sv.syncWriteStatus(w, mu, reqID, statusError, []byte(err.Error()))
+		return
 	}
-	return sv.writeStatus(w, reqID, statusOK, nil)
+	sv.syncWriteStatus(w, mu, reqID, statusOK, nil)
 }
 
 func main() {
@@ -405,19 +425,18 @@ func main() {
 	}
 
 	cli, err := rawkv.NewClientWithOpts(
-	    context.Background(), 
-	    parsePDAddrs(pd), 
-	    rawkv.WithAPIVersion(kvrpcpb.APIVersion_V1),
-	)	
+		context.Background(),
+		parsePDAddrs(pd),
+		rawkv.WithAPIVersion(kvrpcpb.APIVersion_V1),
+	)
 
 	if err != nil {
 		panic(err)
 	}
 
-
 	// --- DIRECT TIKV TEST ---
 	fmt.Println("Testing direct rawkv connection to TiKV cluster...")
-	testCtx, cancel := context.WithTimeout(context.Background(), 3 * time.Second)
+	testCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 
 	err = cli.Put(testCtx, []byte("spann:test_key"), []byte("test_value"))
 	if err != nil {
@@ -434,7 +453,6 @@ func main() {
 	}
 	cancel()
 	// ------------------------
-
 
 	sv := &server{
 		cli:         cli,
