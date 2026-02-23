@@ -3,28 +3,28 @@
 
 #include "inc/Core/Common/CommonUtils.h"
 #include "inc/Core/Common/DistanceUtils.h"
+#include "inc/Core/Common/IQuantizer.h"
+#include "inc/Core/Common/PQQuantizer.h"
 #include "inc/Core/Common/QueryResultSet.h"
 #include "inc/Core/SPANN/Index.h"
 #include "inc/Core/SPANN/SPANNResultIterator.h"
 #include "inc/Core/VectorIndex.h"
-#include "inc/Core/Common/IQuantizer.h"
-#include "inc/Core/Common/PQQuantizer.h"
 #include "inc/Helper/DiskIO.h"
 #include "inc/Helper/SimpleIniReader.h"
-#include "inc/Helper/VectorSetReader.h"
 #include "inc/Helper/StringConvert.h"
+#include "inc/Helper/VectorSetReader.h"
 #include "inc/Quantizer/Training.h"
 #include "inc/Test.h"
 #include "inc/TestDataGenerator.h"
 
 #include <atomic>
 #include <chrono>
+#include <ctime>
 #include <filesystem>
 #include <iomanip>
 #include <memory>
 #include <string>
 #include <thread>
-#include <ctime>
 #include <tuple>
 #include <vector>
 
@@ -37,7 +37,7 @@ DimensionType M = 100;
 int K = 10;
 int queries = 10;
 
-std::shared_ptr<VectorSet> ConvertToFloatVectorSet(const std::shared_ptr<VectorSet>& src)
+std::shared_ptr<VectorSet> ConvertToFloatVectorSet(const std::shared_ptr<VectorSet> &src)
 {
     if (!src)
         return nullptr;
@@ -48,27 +48,24 @@ std::shared_ptr<VectorSet> ConvertToFloatVectorSet(const std::shared_ptr<VectorS
     SizeType count = src->Count();
     DimensionType dim = src->Dimension();
     ByteArray bytes = ByteArray::Alloc(sizeof(float) * (size_t)count * (size_t)dim);
-    float* out = reinterpret_cast<float*>(bytes.Data());
+    float *out = reinterpret_cast<float *>(bytes.Data());
 
     switch (src->GetValueType())
     {
-    case VectorValueType::Int8:
-    {
-        auto* in = reinterpret_cast<const std::int8_t*>(src->GetData());
+    case VectorValueType::Int8: {
+        auto *in = reinterpret_cast<const std::int8_t *>(src->GetData());
         for (size_t i = 0; i < (size_t)count * (size_t)dim; ++i)
             out[i] = static_cast<float>(in[i]);
         break;
     }
-    case VectorValueType::UInt8:
-    {
-        auto* in = reinterpret_cast<const std::uint8_t*>(src->GetData());
+    case VectorValueType::UInt8: {
+        auto *in = reinterpret_cast<const std::uint8_t *>(src->GetData());
         for (size_t i = 0; i < (size_t)count * (size_t)dim; ++i)
             out[i] = static_cast<float>(in[i]);
         break;
     }
-    case VectorValueType::Int16:
-    {
-        auto* in = reinterpret_cast<const std::int16_t*>(src->GetData());
+    case VectorValueType::Int16: {
+        auto *in = reinterpret_cast<const std::int16_t *>(src->GetData());
         for (size_t i = 0; i < (size_t)count * (size_t)dim; ++i)
             out[i] = static_cast<float>(in[i]);
         break;
@@ -80,16 +77,16 @@ std::shared_ptr<VectorSet> ConvertToFloatVectorSet(const std::shared_ptr<VectorS
     return std::make_shared<BasicVectorSet>(bytes, VectorValueType::Float, dim, count);
 }
 
-std::shared_ptr<COMMON::IQuantizer> EnsurePQQuantizer(const std::string& quantizerFile,
-                                                     const std::shared_ptr<VectorSet>& trainVectors,
-                                                     DimensionType quantizedDim,
-                                                     int threadNum)
+std::shared_ptr<COMMON::IQuantizer> EnsurePQQuantizer(const std::string &quantizerFile,
+                                                      const std::shared_ptr<VectorSet> &trainVectors,
+                                                      DimensionType quantizedDim, int threadNum)
 {
     if (!trainVectors)
         return nullptr;
 
     std::shared_ptr<COMMON::IQuantizer> quantizer;
-    if (fileexists(quantizerFile.c_str())) {
+    if (fileexists(quantizerFile.c_str()))
+    {
         auto ptr = SPTAG::f_createIO();
         if (ptr->Initialize(quantizerFile.c_str(), std::ios::binary | std::ios::in))
         {
@@ -102,15 +99,17 @@ std::shared_ptr<COMMON::IQuantizer> EnsurePQQuantizer(const std::string& quantiz
     if (quantizedDim <= 0 || (trainVectors->Dimension() % quantizedDim) != 0)
         return nullptr;
 
-    auto options = std::make_shared<QuantizerOptions>(
-        trainVectors->Count(), false, 0.0f, QuantizerType::PQQuantizer, quantizerFile, quantizedDim, "", "");
+    auto options = std::make_shared<QuantizerOptions>(trainVectors->Count(), false, 0.0f, QuantizerType::PQQuantizer,
+                                                      quantizerFile, quantizedDim, "", "");
     options->m_dimension = trainVectors->Dimension();
     options->m_threadNum = threadNum;
     options->m_inputValueType = VectorValueType::Float;
     options->m_trainingSamples = trainVectors->Count();
 
-    ByteArray pq_vector_array = ByteArray::Alloc(sizeof(std::uint8_t) * (size_t)quantizedDim * (size_t)trainVectors->Count());
-    auto pq_vectors = std::make_shared<BasicVectorSet>(pq_vector_array, VectorValueType::UInt8, quantizedDim, trainVectors->Count());
+    ByteArray pq_vector_array =
+        ByteArray::Alloc(sizeof(std::uint8_t) * (size_t)quantizedDim * (size_t)trainVectors->Count());
+    auto pq_vectors =
+        std::make_shared<BasicVectorSet>(pq_vector_array, VectorValueType::UInt8, quantizedDim, trainVectors->Count());
 
     auto codebooks = TrainPQQuantizer<float>(options, trainVectors, pq_vectors);
     if (!codebooks)
@@ -128,16 +127,18 @@ std::shared_ptr<COMMON::IQuantizer> EnsurePQQuantizer(const std::string& quantiz
 
 template <typename T>
 std::shared_ptr<VectorIndex> BuildIndex(const std::string &outDirectory, std::shared_ptr<VectorSet> vecset,
-                                        std::shared_ptr<MetadataSet> metaset, const std::string &distMethod = "L2", int searchthread = 2)
+                                        std::shared_ptr<MetadataSet> metaset, const std::string &distMethod = "L2",
+                                        int searchthread = 2)
 {
     auto vecIndex = VectorIndex::CreateInstance(IndexAlgoType::SPANN, GetEnumValueType<T>());
     int maxthreads = std::thread::hardware_concurrency();
     int postingLimit = 4 * sizeof(T);
     std::string configuration = R"(
         [Base]
-            DistCalcMethod=)" + distMethod + R"(
+            DistCalcMethod=)" + distMethod +
+                                R"(
             IndexAlgoType=BKT
-            ValueType=)" + Helper::Convert::ConvertToString(GetEnumValueType<T>()) + 
+            ValueType=)" + Helper::Convert::ConvertToString(GetEnumValueType<T>()) +
                                 R"(
             Dim=)" + std::to_string(M) +
                                 R"(
@@ -146,7 +147,8 @@ std::shared_ptr<VectorIndex> BuildIndex(const std::string &outDirectory, std::sh
 
         [SelectHead]
             isExecute=true
-            NumberOfThreads=)" + std::to_string(maxthreads) + R"(
+            NumberOfThreads=)" + std::to_string(maxthreads) +
+                                R"(
             SelectHeadType=BKT
             SelectThreshold=0
             SplitFactor=0
@@ -155,22 +157,27 @@ std::shared_ptr<VectorIndex> BuildIndex(const std::string &outDirectory, std::sh
 
         [BuildHead]
             isExecute=true
-            NumberOfThreads=)" + std::to_string(maxthreads) + R"(
+            NumberOfThreads=)" + std::to_string(maxthreads) +
+                                R"(
 
         [BuildSSDIndex]
             isExecute=true
             BuildSsdIndex=true
             InternalResultNum=64
             SearchInternalResultNum=64
-            NumberOfThreads=)" + std::to_string(maxthreads) + R"(
-	        PostingPageLimit=)" + std::to_string(postingLimit) + R"(
-            SearchPostingPageLimit=)" + std::to_string(postingLimit) + R"(
+            NumberOfThreads=)" + std::to_string(maxthreads) +
+                                R"(
+	        PostingPageLimit=)" +
+                                std::to_string(postingLimit) + R"(
+            SearchPostingPageLimit=)" +
+                                std::to_string(postingLimit) + R"(
             TmpDir=tmpdir
             Storage=FILEIO
             SpdkBatchSize=64
             ExcludeHead=false
             ResultNum=10
-            SearchThreadNum=)" + std::to_string(searchthread) + R"(
+            SearchThreadNum=)" + std::to_string(searchthread) +
+                                R"(
             Update=true
             SteadyState=true
             InsertThreadNum=1
@@ -182,7 +189,8 @@ std::shared_ptr<VectorIndex> BuildIndex(const std::string &outDirectory, std::sh
             SearchDuringUpdate=true
             MergeThreshold=10
             Sampling=4
-            BufferLength=)" + std::to_string(postingLimit) + R"(
+            BufferLength=)" + std::to_string(postingLimit) +
+                                R"(
             InPlace=true
             StartFileSizeGB=1
             OneClusterCutMax=true
@@ -221,17 +229,23 @@ std::shared_ptr<VectorIndex> BuildIndex(const std::string &outDirectory, std::sh
 
 template <typename T>
 std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, std::string &pvecset,
-                                        std::string& pmetaset, std::string& pmetaidx, const std::string &distMethod = "L2",
-                                        int searchthread = 2, int insertthread = 2, std::shared_ptr<COMMON::IQuantizer> quantizer = nullptr, std::string quantizerFilePath = "quantizer.bin")
+                                             std::string &pmetaset, std::string &pmetaidx,
+                                             const std::string &distMethod = "L2", int searchthread = 2,
+                                             int insertthread = 2,
+                                             std::shared_ptr<COMMON::IQuantizer> quantizer = nullptr,
+                                             std::string quantizerFilePath = "quantizer.bin",
+                                             std::string storageType = "FILEIO")
 {
     auto vecIndex = VectorIndex::CreateInstance(IndexAlgoType::SPANN, GetEnumValueType<T>());
     int maxthreads = std::thread::hardware_concurrency();
     int postingLimit = 4 * sizeof(T);
     std::string configuration = R"(
         [Base]
-            DistCalcMethod=)" + distMethod + R"(
+            DistCalcMethod=)" + distMethod +
+                                R"(
             IndexAlgoType=BKT
-            VectorPath=)" + pvecset + R"(
+            VectorPath=)" + pvecset +
+                                R"(
             ValueType=)" + Helper::Convert::ConvertToString(GetEnumValueType<T>()) +
                                 R"(
             Dim=)" + std::to_string(M) +
@@ -241,7 +255,8 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
 
         [SelectHead]
             isExecute=true
-            NumberOfThreads=)" + std::to_string(maxthreads) + R"(
+            NumberOfThreads=)" + std::to_string(maxthreads) +
+                                R"(
             SelectHeadType=BKT
             SelectThreshold=0
             SplitFactor=0
@@ -251,28 +266,34 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
         [BuildHead]
             isExecute=true
             AddCountForRebuild=10000
-            NumberOfThreads=)" + std::to_string(maxthreads) + R"(
+            NumberOfThreads=)" + std::to_string(maxthreads) +
+                                R"(
 
         [BuildSSDIndex]
             isExecute=true
             BuildSsdIndex=true
             InternalResultNum=64
             SearchInternalResultNum=64
-            NumberOfThreads=)" + std::to_string(maxthreads) + R"(
-	        PostingPageLimit=)" + std::to_string(postingLimit) +
+            NumberOfThreads=)" + std::to_string(maxthreads) +
+                                R"(
+	        PostingPageLimit=)" +
+                                std::to_string(postingLimit) +
                                 R"(
             SearchPostingPageLimit=)" +
                                 std::to_string(postingLimit) + R"(
             TmpDir=tmpdir
-            Storage=FILEIO
+            Storage=)" + storageType +
+                                R"(
             SpdkBatchSize=64
             ExcludeHead=false
             ResultNum=10
-            SearchThreadNum=)" + std::to_string(searchthread) + R"(
+            SearchThreadNum=)" + std::to_string(searchthread) +
+                                R"(
             Update=true
             SteadyState=true
             InsertThreadNum=1
-            AppendThreadNum=)" + std::to_string(insertthread) + R"(
+            AppendThreadNum=)" + std::to_string(insertthread) +
+                                R"(
             ReassignThreadNum=0
             DisableReassign=false
             ReassignK=64
@@ -280,7 +301,8 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
             SearchDuringUpdate=true
             MergeThreshold=10
             Sampling=4
-            BufferLength=)" + std::to_string(postingLimit) +  R"(
+            BufferLength=)" + std::to_string(postingLimit) +
+                                R"(
             InPlace=true
             StartFileSizeGB=1
             OneClusterCutMax=true
@@ -348,7 +370,8 @@ std::vector<QueryResult> SearchOnly(std::shared_ptr<VectorIndex> &vecIndex, std:
 template <typename T>
 float EvaluateRecall(const std::vector<QueryResult> &res, std::shared_ptr<VectorIndex> &vecIndex,
                      std::shared_ptr<VectorSet> &queryset, std::shared_ptr<VectorSet> &truth,
-                     std::shared_ptr<VectorSet> &baseVec, std::shared_ptr<VectorSet> &addVec, SizeType baseCount, int recallK, int k, int batch, int totalbatches = -1)
+                     std::shared_ptr<VectorSet> &baseVec, std::shared_ptr<VectorSet> &addVec, SizeType baseCount,
+                     int recallK, int k, int batch, int totalbatches = -1)
 {
     if (!truth)
     {
@@ -373,14 +396,15 @@ float EvaluateRecall(const std::vector<QueryResult> &res, std::shared_ptr<Vector
             SizeType truthVid = truthNN[j];
             float truthDist = MaxDist;
             if (baseVec != nullptr && addVec != nullptr)
-                truthDist = (truthVid < baseCount)
-                    ? vecIndex->ComputeDistance(queryset->GetVector(i), baseVec->GetVector(truthVid))
-                    : vecIndex->ComputeDistance(queryset->GetVector(i), addVec->GetVector(truthVid - baseCount));
+                truthDist =
+                    (truthVid < baseCount)
+                        ? vecIndex->ComputeDistance(queryset->GetVector(i), baseVec->GetVector(truthVid))
+                        : vecIndex->ComputeDistance(queryset->GetVector(i), addVec->GetVector(truthVid - baseCount));
             else if (truthD)
             {
                 truthDist = truthD[j];
             }
-            
+
             for (int l = 0; l < k; ++l)
             {
                 const auto result = res[i].GetResult(l);
@@ -409,8 +433,8 @@ float Search(std::shared_ptr<VectorIndex> &vecIndex, std::shared_ptr<VectorSet> 
 }
 
 template <typename ValueType>
-void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step,
-                   std::shared_ptr<VectorSet> addset, std::shared_ptr<MetadataSet> &metaset, int start = 0)
+void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step, std::shared_ptr<VectorSet> addset,
+                   std::shared_ptr<MetadataSet> &metaset, int start = 0)
 {
     SPANN::Options &p_opts = *(p_index->GetOptions());
     p_index->ForceCompaction();
@@ -433,19 +457,17 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
                 }
                 ByteArray p_meta = metaset->GetMetadata((SizeType)index);
                 std::uint64_t *offsets = new std::uint64_t[2]{0, p_meta.Length()};
-                std::shared_ptr<MetadataSet> meta(new MemMetadataSet(
-                    p_meta, ByteArray((std::uint8_t *)offsets, 2 * sizeof(std::uint64_t), true), 1));
+                std::shared_ptr<MetadataSet> meta(
+                    new MemMetadataSet(p_meta, ByteArray((std::uint8_t *)offsets, 2 * sizeof(std::uint64_t), true), 1));
                 // For quantized index, pass GetFeatureDim() which returns reconstruct dimension
-                ErrorCode ret = p_index->AddIndex(addset->GetVector((SizeType)index), 1, addset->Dimension(), meta, true);
+                ErrorCode ret =
+                    p_index->AddIndex(addset->GetVector((SizeType)index), 1, addset->Dimension(), meta, true);
                 if (ret != ErrorCode::Success)
                 {
                     SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                                 "AddIndex failed. VID:%zu Dim:%d IndexDim:%d Storage:%s Error:%d\n",
-                                 index,
-                                 addset->Dimension(),
-                                 p_index->GetFeatureDim(),
-                                 p_index->GetParameter("Storage", "BuildSSDIndex").c_str(),
-                                 static_cast<int>(ret));
+                                 "AddIndex failed. VID:%zu Dim:%d IndexDim:%d Storage:%s Error:%d\n", index,
+                                 addset->Dimension(), p_index->GetFeatureDim(),
+                                 p_index->GetParameter("Storage", "BuildSSDIndex").c_str(), static_cast<int>(ret));
                 }
                 BOOST_REQUIRE(ret == ErrorCode::Success);
             }
@@ -470,12 +492,11 @@ void InsertVectors(SPANN::Index<ValueType> *p_index, int insertThreads, int step
     }
 }
 
-
 template <typename T>
 void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_ptr<VectorSet> &queryset,
                                std::shared_ptr<VectorSet> &truth, const std::string &truthPath,
-                               SizeType baseVectorCount, int topK, int searchK, int numThreads, int numQueries, int batches, int totalbatches,
-                               std::ostream &benchmarkData, std::string prefix = "")
+                               SizeType baseVectorCount, int topK, int searchK, int numThreads, int numQueries,
+                               int batches, int totalbatches, std::ostream &benchmarkData, std::string prefix = "")
 {
     // Benchmark: Query performance with detailed latency stats
     std::vector<float> latencies(numQueries);
@@ -552,7 +573,6 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
     benchmarkData << prefix << "      \"minLatency\": " << minLat << ",\n";
     benchmarkData << prefix << "      \"maxLatency\": " << maxLat << ",\n";
     benchmarkData << prefix << "      \"qps\": " << qps << ",\n";
-    
 
     // Recall evaluation (if truth file provided)
     if (!truth || truthPath.empty() || truthPath == "none")
@@ -565,7 +585,8 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
 
     BOOST_TEST_MESSAGE("Checking for truth file: " << truthPath);
     std::shared_ptr<VectorSet> pvecset, paddvecset;
-    float avgRecall = EvaluateRecall<T>(results, index, queryset, truth, pvecset, paddvecset, baseVectorCount, topK, searchK, batches, totalbatches);
+    float avgRecall = EvaluateRecall<T>(results, index, queryset, truth, pvecset, paddvecset, baseVectorCount, topK,
+                                        searchK, batches, totalbatches);
     BOOST_TEST_MESSAGE("  Recall" << topK << "@" << searchK << " = " << (avgRecall * 100.0f) << "%");
     BOOST_TEST_MESSAGE("  (Evaluated on " << numQueries << " queries against base vectors)");
     benchmarkData << std::fixed << std::setprecision(4);
@@ -577,9 +598,8 @@ void BenchmarkQueryPerformance(std::shared_ptr<VectorIndex> &index, std::shared_
     benchmarkData << prefix << "    }";
 }
 
-ErrorCode QuantizeVectors(const std::shared_ptr<COMMON::IQuantizer>& quantizer,
-                     const std::shared_ptr<VectorSet>& srcVectors,
-                     ByteArray& quantizedBytes)
+ErrorCode QuantizeVectors(const std::shared_ptr<COMMON::IQuantizer> &quantizer,
+                          const std::shared_ptr<VectorSet> &srcVectors, ByteArray &quantizedBytes)
 {
     if (!quantizer || !srcVectors)
         return ErrorCode::Fail;
@@ -595,7 +615,9 @@ ErrorCode QuantizeVectors(const std::shared_ptr<COMMON::IQuantizer>& quantizer,
             index = vectorsSent.fetch_add(1);
             if (index < srcVectors->Count())
             {
-                quantizer->QuantizeVector(srcVectors->GetVector(index), quantizedBytes.Data() + index * (size_t)(quantizer->GetNumSubvectors()), false);
+                quantizer->QuantizeVector(srcVectors->GetVector(index),
+                                          quantizedBytes.Data() + index * (size_t)(quantizer->GetNumSubvectors()),
+                                          false);
             }
             else
             {
@@ -619,7 +641,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                   DistCalcMethod distMethod, const std::string &indexPath, int dimension, int baseVectorCount,
                   int insertVectorCount, int deleteVectorCount, int batches, int topK, int numThreads, int numQueries,
                   const std::string &outputFile = "output.json", const bool rebuild = true, const int resume = -1,
-                  const std::string &quantizerFilePath = std::string(""), int quantizedDim = 0)
+                  const std::string &quantizerFilePath = std::string(""), int quantizedDim = 0,
+                  const std::string &storageType = "FILEIO")
 {
     int oldM = M, oldK = K, oldN = N, oldQueries = queries;
     N = baseVectorCount;
@@ -680,13 +703,14 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
     jsonFile << "  },\n";
     jsonFile << "  \"results\": {\n";
 
-    int SearchK = enableQuantization? topK * 4 : topK;
+    int SearchK = enableQuantization ? topK * 4 : topK;
     std::shared_ptr<VectorIndex> index;
     std::shared_ptr<COMMON::IQuantizer> quantizer;
-    
+
     // Build initial index
     BOOST_TEST_MESSAGE("\n=== Building Index ===");
-    if (rebuild || !direxists(indexPath.c_str())) {
+    if (rebuild || !direxists(indexPath.c_str()))
+    {
         std::filesystem::remove_all(indexPath);
         auto buildstart = std::chrono::high_resolution_clock::now();
 
@@ -701,7 +725,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
             auto baseVectorsFloat = ConvertToFloatVectorSet(baseVectorsRaw);
             BOOST_REQUIRE(baseVectorsFloat != nullptr);
 
-            if (quantizedDim <= 0) quantizedDim = dimension / 2;
+            if (quantizedDim <= 0)
+                quantizedDim = dimension / 2;
             BOOST_REQUIRE(quantizedDim > 0 && (dimension % quantizedDim) == 0);
 
             quantizer = EnsurePQQuantizer(quantizerFilePath, baseVectorsFloat, (DimensionType)quantizedDim, numThreads);
@@ -709,19 +734,23 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
 
             std::string pquanvecset = "perftest_quanvectors.bin";
             {
-                ByteArray quantizedBaseBytes = ByteArray::Alloc((size_t)baseVectorCount * (size_t)quantizer->GetNumSubvectors());
+                ByteArray quantizedBaseBytes =
+                    ByteArray::Alloc((size_t)baseVectorCount * (size_t)quantizer->GetNumSubvectors());
                 BOOST_REQUIRE(QuantizeVectors(quantizer, baseVectorsFloat, quantizedBaseBytes) == ErrorCode::Success);
-                auto quantizedBase = std::make_shared<BasicVectorSet>(quantizedBaseBytes, VectorValueType::UInt8, quantizer->GetNumSubvectors(), baseVectorCount);
+                auto quantizedBase = std::make_shared<BasicVectorSet>(quantizedBaseBytes, VectorValueType::UInt8,
+                                                                      quantizer->GetNumSubvectors(), baseVectorCount);
                 quantizedBase->Save(pquanvecset);
             }
 
-            index = BuildLargeIndex<uint8_t>(indexPath, pquanvecset, pmeta, pmetaidx, dist, numThreads, numThreads, quantizer);
+            index = BuildLargeIndex<uint8_t>(indexPath, pquanvecset, pmeta, pmetaidx, dist, numThreads, numThreads,
+                                             quantizer, quantizerFilePath, storageType);
             BOOST_REQUIRE(index != nullptr);
             index->SetQuantizerADC(true);
         }
         else
         {
-            index = BuildLargeIndex<T>(indexPath, pvecset, pmeta, pmetaidx, dist, numThreads, numThreads);
+            index = BuildLargeIndex<T>(indexPath, pvecset, pmeta, pmetaidx, dist, numThreads, numThreads, nullptr,
+                                       "quantizer.bin", storageType);
             BOOST_REQUIRE(index != nullptr);
         }
 
@@ -780,17 +809,16 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
 
     // Benchmark 0: Query performance before insertions
     BOOST_TEST_MESSAGE("\n=== Benchmark 0: Query Before Insertions ===");
-    BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
-                                 numThreads, numQueries, 0, batches, tmpbenchmark);
+    BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK, numThreads,
+                                 numQueries, 0, batches, tmpbenchmark);
     jsonFile << "    \"benchmark0_query_before_insert\": ";
-    BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
-                                 numThreads, numQueries, 0, batches, jsonFile);
+    BenchmarkQueryPerformance<T>(index, queryset, truth, truthPath, baseVectorCount, topK, SearchK, numThreads,
+                                 numQueries, 0, batches, jsonFile);
     jsonFile << ",\n";
     jsonFile.flush();
 
     BOOST_REQUIRE(index->SaveIndex(indexPath) == ErrorCode::Success);
     index = nullptr;
-
 
     // Benchmark 1: Insert performance
     if (insertBatchSize > 0)
@@ -834,15 +862,15 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                 end = std::chrono::high_resolution_clock::now();
                 seconds = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000000.0f;
                 jsonFile << "        \"Clone timeSeconds\": " << seconds << ",\n";
-                
+
                 prevIndex = nullptr;
-                
+
                 // If using quantization, update dimension after clone
                 if (enableQuantization)
                 {
                     cloneIndex->SetParameter("Dim", std::to_string(quantizer->GetNumSubvectors()).c_str(), "Base");
                 }
-                
+
                 ErrorCode cloneret = cloneIndex->Check();
                 BOOST_REQUIRE(cloneret == ErrorCode::Success);
                 SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Cloned index from %s to %s, check:%d, time: %f seconds\n",
@@ -850,34 +878,36 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
 
                 int insertStart = iter * insertBatchSize;
                 {
-                    std::shared_ptr<VectorSet> addset = addReader->GetVectorSet(insertStart, insertStart + insertBatchSize);
+                    std::shared_ptr<VectorSet> addset =
+                        addReader->GetVectorSet(insertStart, insertStart + insertBatchSize);
                     ByteArray quantizedAddBytes;
-                    if (enableQuantization) {
+                    if (enableQuantization)
+                    {
                         auto addFloat = ConvertToFloatVectorSet(addset);
                         BOOST_REQUIRE(addFloat != nullptr);
-                        quantizedAddBytes = ByteArray::Alloc((size_t)addFloat->Count() * (size_t)(quantizer->GetNumSubvectors()));
+                        quantizedAddBytes =
+                            ByteArray::Alloc((size_t)addFloat->Count() * (size_t)(quantizer->GetNumSubvectors()));
                         BOOST_REQUIRE(QuantizeVectors(quantizer, addFloat, quantizedAddBytes) == ErrorCode::Success);
-                        addset = std::make_shared<BasicVectorSet>(quantizedAddBytes,
-                                                                 VectorValueType::UInt8,
-                                                                 quantizer->GetNumSubvectors(),
-                                                                 addFloat->Count());
+                        addset = std::make_shared<BasicVectorSet>(quantizedAddBytes, VectorValueType::UInt8,
+                                                                  quantizer->GetNumSubvectors(), addFloat->Count());
                     }
-                    std::shared_ptr<MetadataSet> addmetaset(new MemMetadataSet(paddmeta, paddmetaidx, cloneIndex->m_iDataBlockSize,
-                                           cloneIndex->m_iDataCapacity, 10, insertStart, insertBatchSize), std::default_delete<MemMetadataSet>());
+                    std::shared_ptr<MetadataSet> addmetaset(
+                        new MemMetadataSet(paddmeta, paddmetaidx, cloneIndex->m_iDataBlockSize,
+                                           cloneIndex->m_iDataCapacity, 10, insertStart, insertBatchSize),
+                        std::default_delete<MemMetadataSet>());
                     start = std::chrono::high_resolution_clock::now();
                     InsertVectors<T>(static_cast<SPANN::Index<T> *>(cloneIndex.get()), numThreads, insertBatchSize,
                                      addset, addmetaset, 0);
                     end = std::chrono::high_resolution_clock::now();
                 }
-                seconds =
-                    std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000000.0f;
+                seconds = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000000.0f;
                 double throughput = insertBatchSize / seconds;
 
                 BOOST_TEST_MESSAGE("  Inserted: " << insertBatchSize << " vectors");
                 BOOST_TEST_MESSAGE("  Time: " << seconds << " seconds");
                 BOOST_TEST_MESSAGE("  Throughput: " << throughput << " vectors/sec");
 
-                // Collect JSON data for Benchmark 1               
+                // Collect JSON data for Benchmark 1
                 jsonFile << "        \"inserted\": " << insertBatchSize << ",\n";
                 jsonFile << "        \"insert timeSeconds\": " << seconds << ",\n";
                 jsonFile << "        \"insert throughput\": " << throughput << ",\n";
@@ -933,10 +963,10 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
 
                 BOOST_TEST_MESSAGE("\n=== Benchmark 2: Query After Insertions and Deletions ===");
                 jsonFile << "        \"search\":";
-                BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount, topK, SearchK, numThreads,
-                                             numQueries, iter + 1, batches, tmpbenchmark, "    ");
-                BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount,
-                                             topK, SearchK, numThreads, numQueries, iter + 1, batches, jsonFile, "    ");
+                BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
+                                             numThreads, numQueries, iter + 1, batches, tmpbenchmark, "    ");
+                BenchmarkQueryPerformance<T>(cloneIndex, queryset, truth, truthPath, baseVectorCount, topK, SearchK,
+                                             numThreads, numQueries, iter + 1, batches, jsonFile, "    ");
                 jsonFile << ",\n";
 
                 start = std::chrono::high_resolution_clock::now();
@@ -1158,7 +1188,7 @@ BOOST_AUTO_TEST_CASE(TestReopenIndexRecall)
     auto originalIndex = BuildIndex<int8_t>("original_index", vecset, metaset);
     BOOST_REQUIRE(originalIndex != nullptr);
     float recall1 = Search<int8_t>(originalIndex, queryset, vecset, addvecset, K, truth, N);
-    BOOST_REQUIRE(originalIndex->SaveIndex("original_index") == ErrorCode::Success);    
+    BOOST_REQUIRE(originalIndex->SaveIndex("original_index") == ErrorCode::Success);
     originalIndex = nullptr;
 
     std::shared_ptr<VectorIndex> loadedOnce;
@@ -1253,7 +1283,7 @@ BOOST_AUTO_TEST_CASE(TestCloneRecall)
     BOOST_REQUIRE(originalIndex != nullptr);
     BOOST_REQUIRE(originalIndex->SaveIndex("original_index") == ErrorCode::Success);
     float originalRecall = Search<int8_t>(originalIndex, queryset, vecset, addvecset, K, truth, N);
-    
+
     auto clonedIndex = originalIndex->Clone("cloned_index");
     BOOST_REQUIRE(clonedIndex != nullptr);
     originalIndex.reset();
@@ -1266,8 +1296,8 @@ BOOST_AUTO_TEST_CASE(TestCloneRecall)
     loadedClonedIndex = nullptr;
 
     BOOST_REQUIRE_MESSAGE(std::fabs(originalRecall - clonedRecall) < 0.02,
-                          "Recall mismatch between original and cloned index: "
-                              << "original=" << originalRecall << ", cloned=" << clonedRecall);
+                          "Recall mismatch between original and cloned index: " << "original=" << originalRecall
+                                                                                << ", cloned=" << clonedRecall);
 
     std::filesystem::remove_all("original_index");
     std::filesystem::remove_all("cloned_index");
@@ -1458,8 +1488,8 @@ BOOST_AUTO_TEST_CASE(IndexMultiThreadedQuerySanity)
     BOOST_REQUIRE(loaded != nullptr);
 
     // Insert additional vectors
-    InsertVectors<int8_t>(static_cast<SPANN::Index<int8_t> *>(loaded.get()), 2,
-                          static_cast<int>(addvecset->Count()), addvecset, addmetaset);
+    InsertVectors<int8_t>(static_cast<SPANN::Index<int8_t> *>(loaded.get()), 2, static_cast<int>(addvecset->Count()),
+                          addvecset, addmetaset);
 
     // Perform multithreaded query
     const int threadCount = 4;
@@ -1607,8 +1637,7 @@ BOOST_AUTO_TEST_CASE(IterativeSearch)
     constexpr int insertBatchSize = 1000;
     constexpr int dimension = 1024;
     std::shared_ptr<VectorSet> vecset = get_embeddings<float>(0, insertBatchSize, dimension, -1);
-    std::shared_ptr<MetadataSet> metaset =
-        TestUtils::TestDataGenerator<float>::GenerateMetadataSet(insertBatchSize, 0);
+    std::shared_ptr<MetadataSet> metaset = TestUtils::TestDataGenerator<float>::GenerateMetadataSet(insertBatchSize, 0);
 
     auto originalIndex = BuildIndex<float>("original_index", vecset, metaset);
     BOOST_REQUIRE(originalIndex != nullptr);
@@ -1748,7 +1777,7 @@ BOOST_AUTO_TEST_CASE(CacheTest)
 
     // Build and save index
     std::shared_ptr<VectorIndex> originalIndex, finalIndex;
-    
+
     std::filesystem::remove_all("original_index");
 
     originalIndex = BuildIndex<int8_t>("original_index", vecset, metaset);
@@ -1756,7 +1785,6 @@ BOOST_AUTO_TEST_CASE(CacheTest)
     BOOST_REQUIRE(originalIndex->SaveIndex("original_index") == ErrorCode::Success);
     originalIndex = nullptr;
 
-   
     for (int iter = 0; iter < iterations; iter++)
     {
         if (direxists(("clone_index_" + std::to_string(iter)).c_str()))
@@ -1764,12 +1792,12 @@ BOOST_AUTO_TEST_CASE(CacheTest)
             std::filesystem::remove_all("clone_index_" + std::to_string(iter));
         }
     }
-    
+
     std::string prevPath = "original_index";
     float recall = 0.0;
-    
+
     std::cout << "=================No Cache===================" << std::endl;
-    
+
     for (int iter = 0; iter < iterations; iter++)
     {
         std::string clone_path = "clone_index_" + std::to_string(iter);
@@ -1779,14 +1807,15 @@ BOOST_AUTO_TEST_CASE(CacheTest)
         auto t0 = std::chrono::high_resolution_clock::now();
         BOOST_REQUIRE(prevIndex->Check() == ErrorCode::Success);
         std::cout << "[INFO] Check time for iteration " << iter << ": "
-                  << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - t0).count()
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() -
+                                                                           t0)
+                         .count()
                   << " ms" << std::endl;
-        
 
         auto cloneIndex = prevIndex->Clone(clone_path);
         prevIndex = nullptr;
         BOOST_REQUIRE(cloneIndex->Check() == ErrorCode::Success);
-        
+
         recall = Search<int8_t>(cloneIndex, queryset, vecset, addvecset, K, truth, N, iter);
         std::cout << "[INFO] After Save, Clone and Load:" << " recall@" << K << "=" << recall << std::endl;
         static_cast<SPANN::Index<int8_t> *>(cloneIndex.get())->GetDBStat();
@@ -1795,9 +1824,11 @@ BOOST_AUTO_TEST_CASE(CacheTest)
         InsertVectors<int8_t>(static_cast<SPANN::Index<int8_t> *>(cloneIndex.get()), 1, insertBatchSize, addvecset,
                               metaset, iter * insertBatchSize);
         std::cout << "[INFO] Insert time for iteration " << iter << ": "
-                  << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - t1).count()
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() -
+                                                                           t1)
+                         .count()
                   << " ms" << std::endl;
-        
+
         for (int i = 0; i < deleteBatchSize; i++)
             cloneIndex->DeleteIndex(iter * deleteBatchSize + i);
 
@@ -1809,15 +1840,16 @@ BOOST_AUTO_TEST_CASE(CacheTest)
         cloneIndex = nullptr;
         prevPath = clone_path;
     }
- 
+
     BOOST_REQUIRE(VectorIndex::LoadIndex(prevPath, finalIndex) == ErrorCode::Success);
     BOOST_REQUIRE(finalIndex != nullptr);
     auto t = std::chrono::high_resolution_clock::now();
     BOOST_REQUIRE(finalIndex->Check() == ErrorCode::Success);
-    std::cout << "[INFO] Check time for iteration " << iterations << ": "
-                << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - t).count()
-                << " ms" << std::endl;
-    
+    std::cout
+        << "[INFO] Check time for iteration " << iterations << ": "
+        << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - t).count()
+        << " ms" << std::endl;
+
     recall = Search<int8_t>(finalIndex, queryset, vecset, addvecset, K, truth, N, iterations);
     std::cout << "[INFO] After Save and Load:" << " recall@" << K << "=" << recall << std::endl;
     static_cast<SPANN::Index<int8_t> *>(finalIndex.get())->GetDBStat();
@@ -1826,7 +1858,7 @@ BOOST_AUTO_TEST_CASE(CacheTest)
     {
         std::filesystem::remove_all("clone_index_" + std::to_string(iter));
     }
-    
+
     std::cout << "=================Enable Cache===================" << std::endl;
     prevPath = "original_index";
     for (int iter = 0; iter < iterations; iter++)
@@ -1838,13 +1870,14 @@ BOOST_AUTO_TEST_CASE(CacheTest)
         auto t0 = std::chrono::high_resolution_clock::now();
         BOOST_REQUIRE(prevIndex->Check() == ErrorCode::Success);
         std::cout << "[INFO] Check time for iteration " << iter << ": "
-                  << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - t0).count()
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() -
+                                                                           t0)
+                         .count()
                   << " ms" << std::endl;
-        
 
         prevIndex->SetParameter("CacheSizeGB", "4", "BuildSSDIndex");
         prevIndex->SetParameter("CacheShards", "2", "BuildSSDIndex");
-        
+
         BOOST_REQUIRE(prevIndex->SaveIndex(prevPath) == ErrorCode::Success);
         auto cloneIndex = prevIndex->Clone(clone_path);
 
@@ -1856,7 +1889,9 @@ BOOST_AUTO_TEST_CASE(CacheTest)
         InsertVectors<int8_t>(static_cast<SPANN::Index<int8_t> *>(cloneIndex.get()), 1, insertBatchSize, addvecset,
                               metaset, iter * insertBatchSize);
         std::cout << "[INFO] Insert time for iteration " << iter << ": "
-                  << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - t1).count()
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() -
+                                                                           t1)
+                         .count()
                   << " ms" << std::endl;
 
         for (int i = 0; i < deleteBatchSize; i++)
@@ -1874,10 +1909,11 @@ BOOST_AUTO_TEST_CASE(CacheTest)
     BOOST_REQUIRE(finalIndex != nullptr);
     auto tt = std::chrono::high_resolution_clock::now();
     BOOST_REQUIRE(finalIndex->Check() == ErrorCode::Success);
-    std::cout << "[INFO] Check time for iteration " << iterations << ": "
-                << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - tt).count()
-                << " ms" << std::endl;
-    
+    std::cout
+        << "[INFO] Check time for iteration " << iterations << ": "
+        << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - tt).count()
+        << " ms" << std::endl;
+
     recall = Search<int8_t>(finalIndex, queryset, vecset, addvecset, K, truth, N, iterations);
     std::cout << "[INFO] After Save and Load:" << " recall@" << K << "=" << recall << std::endl;
     static_cast<SPANN::Index<int8_t> *>(finalIndex.get())->GetDBStat();
@@ -1916,7 +1952,9 @@ BOOST_AUTO_TEST_CASE(IterativeSearchPerf)
         auto t0 = std::chrono::high_resolution_clock::now();
         BOOST_REQUIRE(prevIndex->Check() == ErrorCode::Success);
         std::cout << "Check time for iteration " << iter << ": "
-                  << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - t0).count()
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() -
+                                                                           t0)
+                         .count()
                   << " ms" << std::endl;
 
         auto cloneIndex = prevIndex->Clone(clone_path);
@@ -1994,6 +2032,7 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     DistCalcMethod distMethod = iniReader.GetParameter("Benchmark", "DistMethod", DistCalcMethod::L2);
     bool rebuild = iniReader.GetParameter("Benchmark", "Rebuild", true);
     int resume = iniReader.GetParameter("Benchmark", "Resume", -1);
+    std::string storageType = iniReader.GetParameter("Benchmark", "Storage", std::string("FILEIO"));
 
     BOOST_TEST_MESSAGE("=== Benchmark Configuration ===");
     BOOST_TEST_MESSAGE("Vector Path: " << vectorPath);
@@ -2006,6 +2045,7 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     BOOST_TEST_MESSAGE("Threads: " << numThreads);
     BOOST_TEST_MESSAGE("Queries: " << numQueries);
     BOOST_TEST_MESSAGE("DistMethod: " << Helper::Convert::ConvertToString(distMethod));
+    BOOST_TEST_MESSAGE("StorageType: " << storageType);
     if (!quantizerFilePath.empty())
     {
         BOOST_TEST_MESSAGE("QuantizerFilePath: " << quantizerFilePath);
@@ -2021,22 +2061,22 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     if (valueType == VectorValueType::Float)
     {
         RunBenchmark<float>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
-                    insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries, outputFile, 
-                    rebuild, resume, quantizerFilePath, quantizedDim);
+                            insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries, outputFile,
+                            rebuild, resume, quantizerFilePath, quantizedDim, storageType);
     }
     else if (valueType == VectorValueType::Int8)
     {
         RunBenchmark<std::int8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
-                      insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
-                      outputFile, rebuild, resume, quantizerFilePath, quantizedDim);
+                                  insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
+                                  outputFile, rebuild, resume, quantizerFilePath, quantizedDim, storageType);
     }
     else if (valueType == VectorValueType::UInt8)
     {
         RunBenchmark<std::uint8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
-                       insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
-                       outputFile, rebuild, resume, quantizerFilePath, quantizedDim);
+                                   insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
+                                   outputFile, rebuild, resume, quantizerFilePath, quantizedDim, storageType);
     }
 
-    //std::filesystem::remove_all(indexPath);
+    // std::filesystem::remove_all(indexPath);
 }
 BOOST_AUTO_TEST_SUITE_END()
