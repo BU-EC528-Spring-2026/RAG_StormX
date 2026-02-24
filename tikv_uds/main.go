@@ -349,7 +349,7 @@ func (sv *server) handleMultiGet(w *bufio.Writer, mu *sync.Mutex, reqID uint64, 
 
 func (sv *server) handlePut(w *bufio.Writer, mu *sync.Mutex, reqID uint64, timeoutUS uint64, keyBuf []byte, val []byte) {
 	fullKey := sv.keyWithNS(keyBuf)
-
+	fmt.Printf("Received Put for reqID %d\n", reqID)
 	var ctx context.Context
 	var cancel context.CancelFunc
 	if timeoutUS >= 9223372036854775 {
