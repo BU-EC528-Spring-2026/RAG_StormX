@@ -208,30 +208,6 @@ ErrorCode TiKVKeyValueIO::MultiGet(const std::vector<SizeType> &keys,
     return ErrorCode::Success;
 }
 
-ErrorCode TiKVKeyValueIO::MultiGet(const std::vector<SizeType> &keys,
-                                   std::vector<SPTAG::Helper::PageBuffer<std::uint8_t>> &values,
-                                   const std::chrono::microseconds &timeout,
-                                   std::vector<Helper::AsyncReadRequest> *reqs)
-{
-    std::vector<std::string> strValues;
-    ErrorCode ec = MultiGet(keys, &strValues, timeout, reqs);
-    if (ec != ErrorCode::Success)
-        return ec;
-
-    if (values.size() < keys.size())
-    {
-        values.resize(keys.size());
-    }
-
-    for (size_t i = 0; i < keys.size(); i++)
-    {
-        values[i].ReservePageBuffer(strValues[i].size());
-        memcpy(values[i].GetBuffer(), strValues[i].data(), strValues[i].size());
-        values[i].SetAvailableSize(strValues[i].size());
-    }
-    return ErrorCode::Success;
-}
-
 ErrorCode TiKVKeyValueIO::Put(const SizeType key, const std::string &value, const std::chrono::microseconds &timeout,
                               std::vector<Helper::AsyncReadRequest> * /*reqs*/)
 {
