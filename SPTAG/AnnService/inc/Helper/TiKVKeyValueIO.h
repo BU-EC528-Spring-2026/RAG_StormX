@@ -21,6 +21,15 @@ class TiKVKeyValueIO final : public KeyValueIO
 
     void ShutDown() override;
 
+    ErrorCode Checkpoint(std::string prefix) override;
+    // TiKV continuously persists data across its distributed storage layer via Raft.
+    // A manual client-side checkpoint/flush is unnecessary, so we safely return Success.
+
+    ErrorCode StartToScan(SizeType &key, std::string *value) override
+    {
+        return ErrorCode::Undefined;
+    }
+
     ErrorCode Get(const SizeType key, std::string *value, const std::chrono::microseconds &timeout,
                   std::vector<Helper::AsyncReadRequest> *reqs) override;
 
