@@ -68,7 +68,7 @@ class TiKVKeyValueIO final : public KeyValueIO
 
   private:
     TiKVUdsClient m_client;
-    size_t m_cacheCap
+    size_t m_cacheCap;
     size_t m_cacheUsed;
 
     std::mutex m_mu;
