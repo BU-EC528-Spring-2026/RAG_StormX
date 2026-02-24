@@ -51,6 +51,8 @@ class TiKVKeyValueIO final : public KeyValueIO
 
     ErrorCode Delete(SizeType key) override;
 
+    ErrorCode Check(const SizeType key, int size, std::vector<std::uint8_t> *visited) override;
+
     bool Available() override;
 
   private:
@@ -66,7 +68,7 @@ class TiKVKeyValueIO final : public KeyValueIO
 
   private:
     TiKVUdsClient m_client;
-    size_t m_cacheCap;
+    size_t m_cacheCap
     size_t m_cacheUsed;
 
     std::mutex m_mu;

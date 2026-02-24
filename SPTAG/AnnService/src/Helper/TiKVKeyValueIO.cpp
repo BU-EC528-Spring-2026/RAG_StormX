@@ -267,4 +267,21 @@ ErrorCode TiKVKeyValueIO::Delete(SizeType key)
     return ErrorCode::Success;
 }
 
+ErrorCode TiKVKeyValueIO::Check(const SizeType key, int size, std::vector<std::uint8_t> *visited)
+{
+    std::string value;
+    ErrorCode ec = Get(key, &value, std::chrono::microseconds(2000000), nullptr);
+    if (ec != ErrorCode::Success)
+    {
+        return ErrorCode::Key_NotFound;
+    }
+
+    if (value.size() != size)
+    {
+        return ErrorCode::Posting_SizeError;
+    }
+
+    return ErrorCode::Success;
+}
+
 } // namespace SPTAG::Helper
