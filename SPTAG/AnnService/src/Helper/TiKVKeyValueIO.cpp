@@ -23,7 +23,7 @@ bool TiKVKeyValueIO::Available()
     // Health check keeps failure modes explicit
     if (!m_client.Available())
     {
-        return m_client.Health(std::chrono::microseconds(2000)) == 0;
+        return m_client.Health(std::chrono::microseconds(2000000)) == 0;
     }
     return true;
 }
@@ -243,7 +243,7 @@ ErrorCode TiKVKeyValueIO::Merge(const SizeType key, const std::string &value, co
 
 ErrorCode TiKVKeyValueIO::Delete(SizeType key)
 {
-    int32_t st = m_client.DeleteU64((uint64_t)key, std::chrono::microseconds(5000));
+    int32_t st = m_client.DeleteU64((uint64_t)key, std::chrono::microseconds(2000000));
     if (st != 0)
         return ErrorCode::Undefined;
 
