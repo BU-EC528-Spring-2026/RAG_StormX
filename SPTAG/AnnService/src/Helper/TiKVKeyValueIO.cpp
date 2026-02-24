@@ -28,6 +28,13 @@ bool TiKVKeyValueIO::Available()
     return true;
 }
 
+ErrorCode TiKVKeyValueIO::Checkpoint(std::string prefix)
+{
+    // TiKV continuously persists data across its distributed storage layer via Raft.
+    // A manual client-side checkpoint/flush is unnecessary, so we safely return Success.
+    return ErrorCode::Success;
+}
+
 bool TiKVKeyValueIO::CacheGet(SizeType key, std::string &value)
 {
     if (m_cacheCap == 0)
