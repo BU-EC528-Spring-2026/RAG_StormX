@@ -1,8 +1,23 @@
 #include "inc/Helper/TiKVKeyValueIO.h"
+#include <fstream>
+#include <mutex>
 #include <string.h>
 
 namespace SPTAG::Helper
 {
+
+static std::ofstream g_tikv_ops("tikv_operations.csv", std::ios::app);
+static std::mutex g_tikv_mu;
+
+inline void LogOp(const std::string &op)
+{
+    std::lock_guard<std::mutex> lock(g_tikv_mu);
+    if (g_tikv_ops.is_open())
+    {
+        g_tikv_ops << op << "\n";
+        g_tikv_ops.flush();
+    }
+}
 
 TiKVKeyValueIO::TiKVKeyValueIO(const std::string &udsPath, size_t cacheBytes)
     : m_client(udsPath), m_cacheCap(cacheBytes), m_cacheUsed(0)
@@ -15,23 +30,17 @@ void TiKVKeyValueIO::ShutDown()
     m_map.clear();
     m_lru.clear();
     m_cacheUsed = 0;
-    m_client.ShutDown();
+    // We do not shutdown the client since we don't connect.
 }
 
 bool TiKVKeyValueIO::Available()
 {
-    // Health check keeps failure modes explicit
-    if (!m_client.Available())
-    {
-        return m_client.Health(std::chrono::microseconds(2000000)) == 0;
-    }
-    return true;
+    return true; // Always available
 }
 
 ErrorCode TiKVKeyValueIO::Checkpoint(std::string prefix)
 {
-    // TiKV continuously persists data across its distributed storage layer via Raft.
-    // A manual client-side checkpoint/flush is unnecessary, so we safely return Success.
+    LogOp("CHECKPOINT, " + prefix);
     return ErrorCode::Success;
 }
 
@@ -85,25 +94,11 @@ void TiKVKeyValueIO::CachePut(SizeType key, const std::string &value)
 ErrorCode TiKVKeyValueIO::Get(const SizeType key, std::string *value, const std::chrono::microseconds &timeout,
                               std::vector<Helper::AsyncReadRequest> * /*reqs*/)
 {
-    if (value == nullptr)
-        return ErrorCode::Undefined;
-
+    LogOp("GET, " + std::to_string(key));
+    if (value != nullptr)
     {
-        std::lock_guard<std::mutex> g(m_mu);
-        if (CacheGet(key, *value))
-            return ErrorCode::Success;
+        *value = "dummy";
     }
-
-    std::string v;
-    int32_t st = m_client.GetU64((uint64_t)key, v, timeout);
-    if (st != 0)
-        return ErrorCode::Undefined;
-
-    {
-        std::lock_guard<std::mutex> g(m_mu);
-        CachePut(key, v);
-    }
-    *value = std::move(v);
     return ErrorCode::Success;
 }
 
@@ -111,28 +106,9 @@ ErrorCode TiKVKeyValueIO::Get(const SizeType key, Helper::PageBuffer<std::uint8_
                               const std::chrono::microseconds &timeout, std::vector<Helper::AsyncReadRequest> *reqs,
                               bool useCache)
 {
-    std::string s;
-    if (useCache)
-    {
-        {
-            std::lock_guard<std::mutex> g(m_mu);
-            if (CacheGet(key, s))
-            {
-                value.ReservePageBuffer(s.size());
-                memcpy(value.GetBuffer(), s.data(), s.size());
-                value.SetAvailableSize(s.size());
-                return ErrorCode::Success;
-            }
-        }
-    }
-
-    ErrorCode ec = Get(key, &s, timeout, reqs);
-    if (ec != ErrorCode::Success)
-        return ec;
-
-    value.ReservePageBuffer(s.size());
-    memcpy(value.GetBuffer(), s.data(), s.size());
-    value.SetAvailableSize(s.size());
+    LogOp("GET, " + std::to_string(key));
+    value.ReservePageBuffer(8);
+    value.SetAvailableSize(8);
     return ErrorCode::Success;
 }
 
@@ -140,54 +116,17 @@ ErrorCode TiKVKeyValueIO::MultiGet(const std::vector<SizeType> &keys, std::vecto
                                    const std::chrono::microseconds &timeout,
                                    std::vector<Helper::AsyncReadRequest> * /*reqs*/)
 {
-    if (values == nullptr)
-        return ErrorCode::Undefined;
-    values->clear();
-    values->resize(keys.size());
-
-    std::vector<uint64_t> missKeys;
-    missKeys.reserve(keys.size());
-    std::vector<size_t> missIdx;
-    missIdx.reserve(keys.size());
-
-    // First pass: cache hits
+    std::string op = "MULTIGET";
+    for (auto k : keys)
     {
-        std::lock_guard<std::mutex> g(m_mu);
-        for (size_t i = 0; i < keys.size(); i++)
-        {
-            std::string v;
-            if (CacheGet(keys[i], v))
-            {
-                (*values)[i] = std::move(v);
-            }
-            else
-            {
-                missKeys.push_back((uint64_t)keys[i]);
-                missIdx.push_back(i);
-            }
-        }
+        op += ", " + std::to_string(k);
     }
+    LogOp(op);
 
-    if (missKeys.empty())
-        return ErrorCode::Success;
-
-    std::vector<std::string> missVals;
-    int32_t st = m_client.MultiGetU64(missKeys, missVals, timeout);
-    if (st != 0)
-        return ErrorCode::Undefined;
-    if (missVals.size() != missKeys.size())
-        return ErrorCode::Undefined;
-
+    if (values != nullptr)
     {
-        std::lock_guard<std::mutex> g(m_mu);
-        for (size_t j = 0; j < missKeys.size(); j++)
-        {
-            size_t i = missIdx[j];
-            (*values)[i] = missVals[j];
-            CachePut(keys[i], missVals[j]);
-        }
+        values->assign(keys.size(), "dummy");
     }
-
     return ErrorCode::Success;
 }
 
@@ -196,21 +135,21 @@ ErrorCode TiKVKeyValueIO::MultiGet(const std::vector<SizeType> &keys,
                                    const std::chrono::microseconds &timeout,
                                    std::vector<Helper::AsyncReadRequest> *reqs)
 {
-    std::vector<std::string> strValues;
-    ErrorCode ec = MultiGet(keys, &strValues, timeout, reqs);
-    if (ec != ErrorCode::Success)
-        return ec;
+    std::string op = "MULTIGET";
+    for (auto k : keys)
+    {
+        op += ", " + std::to_string(k);
+    }
+    LogOp(op);
 
     if (values.size() < keys.size())
     {
         values.resize(keys.size());
     }
-
     for (size_t i = 0; i < keys.size(); i++)
     {
-        values[i].ReservePageBuffer(strValues[i].size());
-        memcpy(values[i].GetBuffer(), strValues[i].data(), strValues[i].size());
-        values[i].SetAvailableSize(strValues[i].size());
+        values[i].ReservePageBuffer(8);
+        values[i].SetAvailableSize(8);
     }
     return ErrorCode::Success;
 }
@@ -218,14 +157,7 @@ ErrorCode TiKVKeyValueIO::MultiGet(const std::vector<SizeType> &keys,
 ErrorCode TiKVKeyValueIO::Put(const SizeType key, const std::string &value, const std::chrono::microseconds &timeout,
                               std::vector<Helper::AsyncReadRequest> * /*reqs*/)
 {
-    int32_t st = m_client.PutU64((uint64_t)key, value, timeout);
-    if (st != 0)
-        return ErrorCode::Undefined;
-
-    {
-        std::lock_guard<std::mutex> g(m_mu);
-        CachePut(key, value);
-    }
+    LogOp("PUT, " + std::to_string(key) + ", " + std::to_string(value.size()));
     return ErrorCode::Success;
 }
 
@@ -233,48 +165,18 @@ ErrorCode TiKVKeyValueIO::Merge(const SizeType key, const std::string &value, co
                                 std::vector<Helper::AsyncReadRequest> *reqs,
                                 std::function<bool(const void *val, const int size)> checksum)
 {
-    // Implement "merge" as: read existing -> validate checksum -> overwrite with new value.
-    // This keeps correctness in C++ (checksum callback cannot run in Go).
-    std::string oldv;
-    ErrorCode ec = Get(key, &oldv, timeout, reqs);
-    if (ec != ErrorCode::Success)
-        return ec;
-
-    if (checksum)
-    {
-        if (!checksum(oldv.data(), (int)oldv.size()))
-            return ErrorCode::Undefined;
-    }
-    return Put(key, value, timeout, reqs);
+    LogOp("MERGE, " + std::to_string(key) + ", " + std::to_string(value.size()));
+    return ErrorCode::Success;
 }
 
 ErrorCode TiKVKeyValueIO::Delete(SizeType key)
 {
-    int32_t st = m_client.DeleteU64((uint64_t)key, std::chrono::microseconds(2000000));
-    if (st != 0)
-        return ErrorCode::Undefined;
-
-    {
-        std::lock_guard<std::mutex> g(m_mu);
-        auto it = m_map.find(key);
-        if (it != m_map.end())
-        {
-            m_cacheUsed -= it->second->size;
-            m_lru.erase(it->second);
-            m_map.erase(it);
-        }
-    }
+    LogOp("DELETE, " + std::to_string(key));
     return ErrorCode::Success;
 }
 
 ErrorCode TiKVKeyValueIO::Check(const SizeType key, int size, std::vector<std::uint8_t> *visited)
 {
-    // TiKV does not use an external block allocator/mapping like FileIO.
-    // The keys are mapped natively in TiKV's LSM tree, so there are no
-    // block IDs to validate or block duplication issues to check.
-    // Making a full Get() call here is extremely expensive (O(N) network load)
-    // and causes timeouts during large index sequential checks.
-    // Therefore, structural block-mapping checks are successfully bypassed.
     return ErrorCode::Success;
 }
 
