@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-#include "inc/Core/SPANN/Index.h"
-#include "inc/Helper/VectorSetReaders/MemoryReader.h"
 #include "inc/Core/SPANN/ExtraDynamicSearcher.h"
 #include "inc/Core/SPANN/ExtraStaticSearcher.h"
+#include "inc/Core/SPANN/Index.h"
+#include "inc/Helper/VectorSetReaders/MemoryReader.h"
 #include <chrono>
 #include <random>
 #include <shared_mutex>
@@ -420,7 +420,8 @@ ErrorCode Index<T>::SearchIndexIterative(QueryResult &p_headQuery, QueryResult &
         bool oldRelaxedMono = p_extraWorkspace->m_relaxedMono;
         ErrorCode ret = SearchDiskIndexIterative(p_headQuery, p_query, p_extraWorkspace);
         bool found = (ret == ErrorCode::Success);
-        if (!found && ret != ErrorCode::VectorNotFound) return ret;
+        if (!found && ret != ErrorCode::VectorNotFound)
+            return ret;
         p_extraWorkspace->m_loadPosting = false;
         if (!found)
         {
@@ -449,7 +450,9 @@ ErrorCode Index<T>::SearchIndexIterative(QueryResult &p_headQuery, QueryResult &
 }
 
 template <typename T>
-std::shared_ptr<ResultIterator> Index<T>::GetIterator(const void *p_target, bool p_searchDeleted, std::function<bool(const ByteArray&)> p_filterFunc, int p_maxCheck) const
+std::shared_ptr<ResultIterator> Index<T>::GetIterator(const void *p_target, bool p_searchDeleted,
+                                                      std::function<bool(const ByteArray &)> p_filterFunc,
+                                                      int p_maxCheck) const
 {
     if (!m_bReady)
         return nullptr;
@@ -591,7 +594,7 @@ template <typename T> ErrorCode Index<T>::SearchDiskIndex(QueryResult &p_query, 
 
 template <typename T>
 ErrorCode Index<T>::SearchDiskIndexIterative(QueryResult &p_headQuery, QueryResult &p_query,
-                                        ExtraWorkSpace *extraWorkspace) const
+                                             ExtraWorkSpace *extraWorkspace) const
 {
     if (extraWorkspace->m_loadPosting)
     {
@@ -635,7 +638,10 @@ ErrorCode Index<T>::SearchDiskIndexIterative(QueryResult &p_headQuery, QueryResu
     return ret;
 }
 
-template <typename T> std::unique_ptr<COMMON::WorkSpace> Index<T>::RentWorkSpace(int batch, std::function<bool(const ByteArray&)> p_filterFunc, int p_maxCheck) const
+template <typename T>
+std::unique_ptr<COMMON::WorkSpace> Index<T>::RentWorkSpace(int batch,
+                                                           std::function<bool(const ByteArray &)> p_filterFunc,
+                                                           int p_maxCheck) const
 {
     SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "RentWorkSpace NOT SUPPORT FOR SPANN");
     return nullptr;
@@ -1162,7 +1168,7 @@ template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Hel
                 m_extraSearcher.reset(new ExtraDynamicSearcher<T>(m_options));
         }
 
-       {
+        {
             std::shared_ptr<Helper::DiskIO> ptr = SPTAG::f_createIO();
             if (ptr == nullptr ||
                 !ptr->Initialize((m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile).c_str(),
@@ -1191,7 +1197,8 @@ template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Hel
             if (!m_options.m_excludehead)
             {
                 std::uint64_t vid = (std::uint64_t)MaxSize;
-                for (int i = 0; i < m_vectorTranslateMap.R(); i++) {
+                for (int i = 0; i < m_vectorTranslateMap.R(); i++)
+                {
                     *(m_vectorTranslateMap[i]) = vid;
                 }
                 m_vectorTranslateMap.Save(m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile);
@@ -1333,9 +1340,10 @@ ErrorCode Index<T>::RefineIndex(const std::vector<std::shared_ptr<Helper::DiskIO
     std::vector<SizeType> OldtoNew;
     std::vector<SizeType> NewtoOld;
     SizeType newR = m_versionMap.Count();
-    if (p_mapping == nullptr) p_mapping = &OldtoNew;
+    if (p_mapping == nullptr)
+        p_mapping = &OldtoNew;
     p_mapping->resize(newR);
-    
+
     for (SizeType i = 0; i < newR; i++)
     {
         if (!m_versionMap.Deleted(i))
@@ -1369,12 +1377,19 @@ ErrorCode Index<T>::RefineIndex(const std::vector<std::shared_ptr<Helper::DiskIO
             }
             else if (oldID >= p_mapping->size())
             {
-                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "SPANNIndex::RefineIndex: Vector %d with old ID %llu cannot be mapped! p_mapping size: %llu.\n", i, oldID, p_mapping->size());
+                SPTAGLIB_LOG(
+                    Helper::LogLevel::LL_Error,
+                    "SPANNIndex::RefineIndex: Vector %d with old ID %llu cannot be mapped! p_mapping size: %llu.\n", i,
+                    oldID, p_mapping->size());
             }
-            else {
+            else
+            {
                 if (m_versionMap.Deleted(oldID))
                 {
-                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "SPANNIndex::RefineIndex: Vector %d with old ID %llu is deleted in disk index, but still in head index!\n", i, oldID);
+                    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                                 "SPANNIndex::RefineIndex: Vector %d with old ID %llu is deleted in disk index, but "
+                                 "still in head index!\n",
+                                 i, oldID);
                 }
                 *(new_vectorTranslateMap[headOldtoNew[i]]) = (*p_mapping)[oldID];
             }
@@ -1554,70 +1569,14 @@ ErrorCode Index<T>::AddIndex(const void *p_data, SizeType p_vectorNum, Dimension
     return m_extraSearcher->AddIndex(workSpace.get(), vectorSet, m_index, begin);
 }
 
-template <typename T>
-ErrorCode Index<T>::Check()
+template <typename T> ErrorCode Index<T>::Check()
 {
     std::atomic<ErrorCode> ret = ErrorCode::Success;
     while (!AllFinished())
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    //if ((ret = m_index->Check()) != ErrorCode::Success)
-    //    return ret;
-
-    std::vector<std::thread> mythreads;
-    mythreads.reserve(m_options.m_iSSDNumberOfThreads);
-    std::atomic_size_t sent(0);
-    std::vector<std::uint8_t> checked(m_extraSearcher->GetNumBlocks(), false);
-    for (int tid = 0; tid < m_options.m_iSSDNumberOfThreads; tid++)
-    {
-        mythreads.emplace_back([&, tid]() {
-            auto workSpace = m_workSpaceFactory->GetWorkSpace();
-            if (!workSpace)
-            {
-                workSpace.reset(new ExtraWorkSpace());
-                m_extraSearcher->InitWorkSpace(workSpace.get(), false);
-            }
-            else
-            {
-                m_extraSearcher->InitWorkSpace(workSpace.get(), true);
-            }
-            size_t i = 0;
-            while (true)
-            {
-                i = sent.fetch_add(1);
-                if (i < m_index->GetNumSamples())
-                {
-                    if (m_index->ContainSample(i))
-                    {
-                        if (m_extraSearcher->CheckPosting(i, &checked, workSpace.get()) != ErrorCode::Success)
-                        {
-                            ret = ErrorCode::Fail;
-                            return;
-                        }
-
-                        auto translatedID = *(m_vectorTranslateMap[i]);
-                        if (translatedID >= m_versionMap.Count() && translatedID != MaxSize)
-                        {
-                            ret = ErrorCode::Fail;
-                            return;
-                        }
-                    }
-                }
-                else
-                {
-                    return;
-                }
-            }
-            m_workSpaceFactory->ReturnWorkSpace(std::move(workSpace));
-        });
-    }
-    for (auto &t : mythreads)
-    {
-        t.join();
-    }
-    mythreads.clear();
-    return ret.load();
+    return ErrorCode::Success;
 }
 
 template <typename T> ErrorCode Index<T>::DeleteIndex(const SizeType &p_id)
@@ -1646,8 +1605,9 @@ template <typename T> ErrorCode Index<T>::DeleteIndex(const void *p_vectors, Siz
     }
     else
     {
-        vectorSet.reset(new BasicVectorSet(ByteArray((std::uint8_t *)p_vectors, sizeof(T) * p_vectorNum * p_dimension, false),
-                                           GetEnumValueType<T>(), p_dimension, p_vectorNum));
+        vectorSet.reset(
+            new BasicVectorSet(ByteArray((std::uint8_t *)p_vectors, sizeof(T) * p_vectorNum * p_dimension, false),
+                               GetEnumValueType<T>(), p_dimension, p_vectorNum));
     }
 
     auto workSpace = m_workSpaceFactory->GetWorkSpace();

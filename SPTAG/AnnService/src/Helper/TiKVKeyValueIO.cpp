@@ -1,7 +1,8 @@
 #include "inc/Helper/TiKVKeyValueIO.h"
+#include <chrono>
 #include <fstream>
 #include <mutex>
-#include <string.h>
+#include <string>
 
 namespace SPTAG::Helper
 {
@@ -11,10 +12,14 @@ static std::mutex g_tikv_mu;
 
 inline void LogOp(const std::string &op)
 {
+    using namespace std::chrono;
+    auto now = system_clock::now();
+    auto ms = duration_cast<milliseconds>(now.time_since_epoch()).count();
+
     std::lock_guard<std::mutex> lock(g_tikv_mu);
     if (g_tikv_ops.is_open())
     {
-        g_tikv_ops << op << "\n";
+        g_tikv_ops << ms << ", " << op << "\n";
         g_tikv_ops.flush();
     }
 }
