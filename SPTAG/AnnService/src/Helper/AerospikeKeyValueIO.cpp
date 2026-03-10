@@ -32,6 +32,41 @@ struct BatchReadContext
     const std::string *valueBin;
     ErrorCode status;
 };
+
+bool BatchReadCallback(const as_batch_read *results, uint32_t n, void *udata)
+{
+    auto *ctx = reinterpret_cast<BatchReadContext *>(udata);
+    if (ctx == nullptr || ctx->values == nullptr || ctx->valueBin == nullptr)
+    {
+        return false;
+    }
+
+    if (ctx->values->size() < n)
+    {
+        ctx->values->resize(n);
+    }
+
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        if (results[i].result != AEROSPIKE_OK || results[i].record == nullptr)
+        {
+            ctx->status = ErrorCode::Fail;
+            return false;
+        }
+
+        uint32_t rawSize = 0;
+        const uint8_t *raw = as_record_get_raw(results[i].record, ctx->valueBin->c_str(), &rawSize);
+        if (raw == nullptr)
+        {
+            ctx->status = ErrorCode::Fail;
+            return false;
+        }
+        (*ctx->values)[i].assign(reinterpret_cast<const char *>(raw), rawSize);
+    }
+
+    ctx->status = ErrorCode::Success;
+    return true;
+}
 } // namespace
 #endif
 
@@ -187,7 +222,7 @@ ErrorCode AerospikeKeyValueIO::MultiGet(const std::vector<SizeType> &keys, std::
     policy.base.timeout = static_cast<uint32_t>(ToMilliseconds(timeout).count());
 
     BatchReadContext ctx{values, &m_valueBin, ErrorCode::Success};
-    as_status status = aerospike_batch_get(&m_as, &err, &policy, &batch, AerospikeKeyValueIO::BatchReadCallback, &ctx);
+    as_status status = aerospike_batch_get(&m_as, &err, &policy, &batch, BatchReadCallback, &ctx);
     as_batch_destroy(&batch);
     if (status != AEROSPIKE_OK || ctx.status != ErrorCode::Success)
     {
@@ -373,41 +408,6 @@ ErrorCode AerospikeKeyValueIO::PutRaw(const SizeType key, const uint8_t *value, 
     as_record_destroy(&rec);
     as_key_destroy(&akey);
     return status == AEROSPIKE_OK ? ErrorCode::Success : ErrorCode::Fail;
-}
-
-bool AerospikeKeyValueIO::BatchReadCallback(const as_batch_read *results, uint32_t n, void *udata)
-{
-    auto *ctx = reinterpret_cast<BatchReadContext *>(udata);
-    if (ctx == nullptr || ctx->values == nullptr || ctx->valueBin == nullptr)
-    {
-        return false;
-    }
-
-    if (ctx->values->size() < n)
-    {
-        ctx->values->resize(n);
-    }
-
-    for (uint32_t i = 0; i < n; ++i)
-    {
-        if (results[i].result != AEROSPIKE_OK || results[i].record == nullptr)
-        {
-            ctx->status = ErrorCode::Fail;
-            return false;
-        }
-
-        uint32_t rawSize = 0;
-        const uint8_t *raw = as_record_get_raw(results[i].record, ctx->valueBin->c_str(), &rawSize);
-        if (raw == nullptr)
-        {
-            ctx->status = ErrorCode::Fail;
-            return false;
-        }
-        (*ctx->values)[i].assign(reinterpret_cast<const char *>(raw), rawSize);
-    }
-
-    ctx->status = ErrorCode::Success;
-    return true;
 }
 #endif
 

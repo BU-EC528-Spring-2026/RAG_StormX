@@ -52,7 +52,6 @@ class AerospikeKeyValueIO final : public KeyValueIO
 #ifdef AEROSPIKE
     ErrorCode PutRaw(const SizeType key, const uint8_t *value, uint32_t valueSize,
                      const std::chrono::microseconds &timeout);
-    static bool BatchReadCallback(const as_batch_read *results, uint32_t n, void *udata);
 
     std::string m_host;
     uint16_t m_port;
