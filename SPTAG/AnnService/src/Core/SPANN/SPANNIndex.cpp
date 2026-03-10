@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-#include "inc/Core/SPANN/ExtraDynamicSearcher.h"
-#include "inc/Core/SPANN/ExtraStaticSearcher.h"
+// clang-format off
 #include "inc/Core/SPANN/Index.h"
+#include "inc/Core/SPANN/ExtraStaticSearcher.h"
+#include "inc/Core/SPANN/ExtraDynamicSearcher.h"
+// clang-format on
 #include "inc/Helper/VectorSetReaders/MemoryReader.h"
 #include <chrono>
 #include <random>

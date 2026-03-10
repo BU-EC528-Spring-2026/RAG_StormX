@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
 #ifndef _SPTAG_SPANN_EXTRADYNAMICSEARCHER_H_
@@ -13,6 +13,7 @@
 #include "inc/Core/Common/PostingSizeRecord.h"
 #include "inc/Core/Common/TruthSet.h"
 #include "inc/Helper/AsyncFileReader.h"
+#include "inc/Helper/AerospikeKeyValueIO.h"
 #include "inc/Helper/ConcurrentSet.h"
 #include "inc/Helper/KeyValueIO.h"
 #include "inc/Helper/TiKVKeyValueIO.h"
@@ -23,10 +24,31 @@
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <random>
 #include <utility>
+
+#ifndef SPTAG_AEROSPIKE_DEFAULT_HOST
+#define SPTAG_AEROSPIKE_DEFAULT_HOST "10.150.0.24"
+#endif
+
+#ifndef SPTAG_AEROSPIKE_DEFAULT_PORT
+#define SPTAG_AEROSPIKE_DEFAULT_PORT 3000
+#endif
+
+#ifndef SPTAG_AEROSPIKE_DEFAULT_NAMESPACE
+#define SPTAG_AEROSPIKE_DEFAULT_NAMESPACE "test"
+#endif
+
+#ifndef SPTAG_AEROSPIKE_DEFAULT_SET
+#define SPTAG_AEROSPIKE_DEFAULT_SET "sptag"
+#endif
+
+#ifndef SPTAG_AEROSPIKE_DEFAULT_BIN
+#define SPTAG_AEROSPIKE_DEFAULT_BIN "value"
+#endif
 
 #ifdef SPDK
 #include "ExtraSPDKController.h"
@@ -313,6 +335,57 @@ template <typename ValueType> class ExtraDynamicSearcher : public IExtraSearcher
 
             size_t cacheBytes = cacheMB * 1024 * 1024;
             db.reset(new Helper::TiKVKeyValueIO(udsPath, cacheBytes));
+        }
+        else if (p_opt.m_storage == Storage::AEROSPIKEIO)
+        {
+#ifdef AEROSPIKE
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ExtraDynamicSearcher:UseAerospike\n");
+
+            std::string host = SPTAG_AEROSPIKE_DEFAULT_HOST;
+            uint16_t port = static_cast<uint16_t>(SPTAG_AEROSPIKE_DEFAULT_PORT);
+            std::string ns = SPTAG_AEROSPIKE_DEFAULT_NAMESPACE;
+            std::string setName = SPTAG_AEROSPIKE_DEFAULT_SET;
+            std::string valueBin = SPTAG_AEROSPIKE_DEFAULT_BIN;
+
+            if (const char *envHost = std::getenv("SPTAG_AEROSPIKE_HOST"))
+            {
+                host = envHost;
+            }
+            if (const char *envPort = std::getenv("SPTAG_AEROSPIKE_PORT"))
+            {
+                try
+                {
+                    auto parsed = std::stoul(envPort);
+                    if (parsed <= std::numeric_limits<uint16_t>::max())
+                    {
+                        port = static_cast<uint16_t>(parsed);
+                    }
+                }
+                catch (...)
+                {
+                    port = static_cast<uint16_t>(SPTAG_AEROSPIKE_DEFAULT_PORT);
+                }
+            }
+            if (const char *envNs = std::getenv("SPTAG_AEROSPIKE_NAMESPACE"))
+            {
+                ns = envNs;
+            }
+            if (const char *envSet = std::getenv("SPTAG_AEROSPIKE_SET"))
+            {
+                setName = envSet;
+            }
+            if (const char *envBin = std::getenv("SPTAG_AEROSPIKE_BIN"))
+            {
+                valueBin = envBin;
+            }
+
+            db.reset(new Helper::AerospikeKeyValueIO(host, port, ns, setName, valueBin));
+#else
+            SPTAGLIB_LOG(
+                Helper::LogLevel::LL_Error,
+                "ExtraDynamicSearcher:Aerospike unsupported! Use -DAEROSPIKE=ON when doing cmake.\n");
+            return;
+#endif
         }
 
         m_hardLatencyLimit = std::chrono::microseconds((int)(p_opt.m_latencyLimit) * 1000);
@@ -1964,7 +2037,8 @@ template <typename ValueType> class ExtraDynamicSearcher : public IExtraSearcher
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "Recovery:Current posting num: %d.\n",
                          m_postingSizes.GetPostingNum());
         }
-        else if (m_opt->m_storage == Storage::ROCKSDBIO || m_opt->m_storage == Storage::TIKVIO)
+        else if (m_opt->m_storage == Storage::ROCKSDBIO || m_opt->m_storage == Storage::TIKVIO ||
+                 m_opt->m_storage == Storage::AEROSPIKEIO)
         {
             m_versionMap->Load(versionmapPath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);
             m_postingSizes.Load(postingSizePath, m_opt->m_datasetRowsInBlock, m_opt->m_datasetCapacity);

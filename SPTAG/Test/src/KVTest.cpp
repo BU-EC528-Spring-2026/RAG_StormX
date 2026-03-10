@@ -3,10 +3,32 @@
 
 #include "inc/Core/SPANN/ExtraFileController.h"
 #include "inc/Core/SPANN/IExtraSearcher.h"
+#include "inc/Helper/AerospikeKeyValueIO.h"
 #include "inc/Test.h"
 #include "inc/Helper/TiKVKeyValueIO.h"
 #include <chrono>
+#include <cstdlib>
 #include <memory>
+
+#ifndef SPTAG_AEROSPIKE_DEFAULT_HOST
+#define SPTAG_AEROSPIKE_DEFAULT_HOST "10.150.0.24"
+#endif
+
+#ifndef SPTAG_AEROSPIKE_DEFAULT_PORT
+#define SPTAG_AEROSPIKE_DEFAULT_PORT 3000
+#endif
+
+#ifndef SPTAG_AEROSPIKE_DEFAULT_NAMESPACE
+#define SPTAG_AEROSPIKE_DEFAULT_NAMESPACE "test"
+#endif
+
+#ifndef SPTAG_AEROSPIKE_DEFAULT_SET
+#define SPTAG_AEROSPIKE_DEFAULT_SET "sptag"
+#endif
+
+#ifndef SPTAG_AEROSPIKE_DEFAULT_BIN
+#define SPTAG_AEROSPIKE_DEFAULT_BIN "value"
+#endif
 
 // enable rocksdb io_uring
 
@@ -90,6 +112,24 @@ void Test(std::string path, std::string type, bool debug = false)
     {
     	db.reset(new Helper::TiKVKeyValueIO("/tmp/sptag_tikv.sock", 10*1024*1024));
     }
+    else if (type == "Aerospike")
+    {
+        std::string host = SPTAG_AEROSPIKE_DEFAULT_HOST;
+        uint16_t port = static_cast<uint16_t>(SPTAG_AEROSPIKE_DEFAULT_PORT);
+        std::string ns = SPTAG_AEROSPIKE_DEFAULT_NAMESPACE;
+        std::string setName = SPTAG_AEROSPIKE_DEFAULT_SET;
+        std::string valueBin = SPTAG_AEROSPIKE_DEFAULT_BIN;
+
+        if (const char* envHost = std::getenv("SPTAG_AEROSPIKE_HOST")) host = envHost;
+        if (const char* envPort = std::getenv("SPTAG_AEROSPIKE_PORT")) {
+            try { port = static_cast<uint16_t>(std::stoul(envPort)); } catch (...) { port = static_cast<uint16_t>(SPTAG_AEROSPIKE_DEFAULT_PORT); }
+        }
+        if (const char* envNs = std::getenv("SPTAG_AEROSPIKE_NAMESPACE")) ns = envNs;
+        if (const char* envSet = std::getenv("SPTAG_AEROSPIKE_SET")) setName = envSet;
+        if (const char* envBin = std::getenv("SPTAG_AEROSPIKE_BIN")) valueBin = envBin;
+
+        db.reset(new Helper::AerospikeKeyValueIO(host, port, ns, setName, valueBin));
+    }
 
     else
     {
@@ -129,6 +169,20 @@ void Test(std::string path, std::string type, bool debug = false)
               << (std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() /
                   (float)(totalNum * mergeIters))
               << "us" << std::endl;
+
+    std::string value;
+    if (db->Get(0, &value, MaxTimeout, &(workspace.m_diskRequests)) != ErrorCode::Success || value.empty()) {
+        std::cerr << "Get operation failed on key: 0" << std::endl;
+    }
+
+    if (db->Delete(0) != ErrorCode::Success) {
+        std::cerr << "Delete operation failed on key: 0" << std::endl;
+    }
+
+    std::string deletedValue;
+    if (db->Get(0, &deletedValue, MaxTimeout, &(workspace.m_diskRequests)) == ErrorCode::Success) {
+        std::cerr << "Delete validation failed: key 0 still exists." << std::endl;
+    }
 
     Search(db, internalResultNum, totalNum, 10, debug, workspace);
 
@@ -170,6 +224,11 @@ BOOST_AUTO_TEST_CASE(FileTest)
 BOOST_AUTO_TEST_CASE(TiKVTest)
 {
     Test(std::string("tmp_tikv") + FolderSep + "test", "TiKV", false);
+}
+
+BOOST_AUTO_TEST_CASE(AerospikeTest)
+{
+    Test(std::string("tmp_aerospike") + FolderSep + "test", "Aerospike", false);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
