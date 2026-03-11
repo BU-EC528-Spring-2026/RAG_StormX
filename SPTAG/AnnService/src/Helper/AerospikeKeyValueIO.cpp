@@ -9,8 +9,6 @@
 #ifdef AEROSPIKE
 #include <aerospike/aerospike_batch.h>
 #include <aerospike/aerospike_key.h>
-#include <aerospike/aerospike_operate.h>
-#include <aerospike/aerospike_record.h>
 #include <aerospike/as_batch.h>
 #include <aerospike/as_error.h>
 #include <aerospike/as_key.h>
