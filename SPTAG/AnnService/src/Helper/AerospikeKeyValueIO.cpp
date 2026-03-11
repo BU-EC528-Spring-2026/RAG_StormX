@@ -10,6 +10,7 @@
 #include <aerospike/aerospike_batch.h>
 #include <aerospike/aerospike_key.h>
 #include <aerospike/as_batch.h>
+#include <aerospike/as_bytes.h>
 #include <aerospike/as_error.h>
 #include <aerospike/as_key.h>
 #include <aerospike/as_operations.h>
@@ -46,20 +47,26 @@ bool BatchReadCallback(const as_batch_read *results, uint32_t n, void *udata)
 
     for (uint32_t i = 0; i < n; ++i)
     {
-        if (results[i].result != AEROSPIKE_OK || results[i].record == nullptr)
+        if (results[i].result != AEROSPIKE_OK)
         {
             ctx->status = ErrorCode::Fail;
             return false;
         }
 
-        uint32_t rawSize = 0;
-        const uint8_t *raw = as_record_get_raw(results[i].record, ctx->valueBin->c_str(), &rawSize);
-        if (raw == nullptr)
+        as_bytes *bytes = as_record_get_bytes(&results[i].record, ctx->valueBin->c_str());
+        if (bytes == nullptr)
         {
             ctx->status = ErrorCode::Fail;
             return false;
         }
-        (*ctx->values)[i].assign(reinterpret_cast<const char *>(raw), rawSize);
+
+        const uint8_t *raw = as_bytes_get(bytes);
+        if (raw == nullptr && bytes->size > 0)
+        {
+            ctx->status = ErrorCode::Fail;
+            return false;
+        }
+        (*ctx->values)[i].assign(reinterpret_cast<const char *>(raw), bytes->size);
     }
 
     ctx->status = ErrorCode::Success;
@@ -156,7 +163,8 @@ ErrorCode AerospikeKeyValueIO::Get(const SizeType key, std::string *value, const
     as_error err;
     as_policy_read policy;
     as_policy_read_init(&policy);
-    policy.timeout = static_cast<uint32_t>(ToMilliseconds(timeout).count());
+    policy.base.total_timeout = static_cast<uint32_t>(ToMilliseconds(timeout).count());
+    policy.base.socket_timeout = policy.base.total_timeout;
 
     as_key akey;
     as_key_init_int64(&akey, m_namespace.c_str(), m_setName.c_str(), static_cast<int64_t>(key));
@@ -172,15 +180,21 @@ ErrorCode AerospikeKeyValueIO::Get(const SizeType key, std::string *value, const
         return ErrorCode::Fail;
     }
 
-    uint32_t rawSize = 0;
-    const uint8_t *raw = as_record_get_raw(record, m_valueBin.c_str(), &rawSize);
-    if (raw == nullptr)
+    as_bytes *bytes = as_record_get_bytes(record, m_valueBin.c_str());
+    if (bytes == nullptr)
     {
         as_record_destroy(record);
         return ErrorCode::Fail;
     }
 
-    value->assign(reinterpret_cast<const char *>(raw), rawSize);
+    const uint8_t *raw = as_bytes_get(bytes);
+    if (raw == nullptr && bytes->size > 0)
+    {
+        as_record_destroy(record);
+        return ErrorCode::Fail;
+    }
+
+    value->assign(reinterpret_cast<const char *>(raw), bytes->size);
     as_record_destroy(record);
     return ErrorCode::Success;
 #else
@@ -217,7 +231,8 @@ ErrorCode AerospikeKeyValueIO::MultiGet(const std::vector<SizeType> &keys, std::
     as_error err;
     as_policy_batch policy;
     as_policy_batch_init(&policy);
-    policy.base.timeout = static_cast<uint32_t>(ToMilliseconds(timeout).count());
+    policy.base.total_timeout = static_cast<uint32_t>(ToMilliseconds(timeout).count());
+    policy.base.socket_timeout = policy.base.total_timeout;
 
     BatchReadContext ctx{values, &m_valueBin, ErrorCode::Success};
     as_status status = aerospike_batch_get(&m_as, &err, &policy, &batch, BatchReadCallback, &ctx);
@@ -319,7 +334,8 @@ ErrorCode AerospikeKeyValueIO::Merge(const SizeType key, const std::string &valu
     as_error err;
     as_policy_operate policy;
     as_policy_operate_init(&policy);
-    policy.timeout = static_cast<uint32_t>(ToMilliseconds(timeout).count());
+    policy.base.total_timeout = static_cast<uint32_t>(ToMilliseconds(timeout).count());
+    policy.base.socket_timeout = policy.base.total_timeout;
 
     as_key akey;
     as_key_init_int64(&akey, m_namespace.c_str(), m_setName.c_str(), static_cast<int64_t>(key));
@@ -387,7 +403,8 @@ ErrorCode AerospikeKeyValueIO::PutRaw(const SizeType key, const uint8_t *value, 
     as_error err;
     as_policy_write policy;
     as_policy_write_init(&policy);
-    policy.timeout = static_cast<uint32_t>(ToMilliseconds(timeout).count());
+    policy.base.total_timeout = static_cast<uint32_t>(ToMilliseconds(timeout).count());
+    policy.base.socket_timeout = policy.base.total_timeout;
 
     as_key akey;
     as_key_init_int64(&akey, m_namespace.c_str(), m_setName.c_str(), static_cast<int64_t>(key));
