@@ -39,5 +39,12 @@ COPY ThirdParty ./ThirdParty/
 
 # 6. Build
 RUN mkdir build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-9 -DCMAKE_C_COMPILER=gcc-9 -DAEROSPIKE=ON .. && \
+    AS_INC=$(find /usr /opt /lib -name "aerospike.h" 2>/dev/null | grep "aerospike/aerospike.h" | head -n 1 | sed 's|/aerospike/aerospike.h||') && \
+    AS_LIB=$(find /usr /opt /lib -name "libaerospike.so" 2>/dev/null | head -n 1) && \
+    if [ -z "$AS_LIB" ]; then AS_LIB=$(find /usr /opt /lib -name "libaerospike.a" 2>/dev/null | head -n 1); fi && \
+    echo "--- Found Aerospike Include Dir: $AS_INC ---" && \
+    echo "--- Found Aerospike Library: $AS_LIB ---" && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-9 -DCMAKE_C_COMPILER=gcc-9 -DAEROSPIKE=ON \
+          -DAEROSPIKE_INCLUDE_DIR="$AS_INC" \
+          -DAEROSPIKE_CLIENT_LIBRARY="$AS_LIB" .. && \
     make -j$(nproc)
