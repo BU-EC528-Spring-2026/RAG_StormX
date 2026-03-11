@@ -136,23 +136,29 @@ void Test(std::string path, std::string type, bool debug = false)
         db.reset(new FileIO(opt));
     }
 
+    BOOST_REQUIRE_MESSAGE(db->Available(), type + " backend is not available (connection failed)");
+
+    int putFailures = 0;
     auto t1 = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < totalNum; i++)
     {
         int len = std::to_string(i).length();
         std::string val(PageSize - len, '0');
-        
-	if (db->Put(i, val, MaxTimeout, &(workspace.m_diskRequests)) != ErrorCode::Success) {
-            std::cerr << "TiKV Put operation failed on key: " << i << std::endl;
-        }	
+
+        if (db->Put(i, val, MaxTimeout, &(workspace.m_diskRequests)) != ErrorCode::Success) {
+            std::cerr << type << " Put failed on key: " << i << std::endl;
+            ++putFailures;
+        }
     }
     auto t2 = std::chrono::high_resolution_clock::now();
     std::cout << "avg put time: "
               << (std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() / (float)(totalNum)) << "us"
               << std::endl;
+    BOOST_CHECK_EQUAL(putFailures, 0);
 
     db->ForceCompaction();
 
+    int mergeFailures = 0;
     t1 = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < totalNum; i++)
     {
@@ -160,41 +166,36 @@ void Test(std::string path, std::string type, bool debug = false)
         {
             if (db->Merge(i, std::to_string(i), MaxTimeout, &(workspace.m_diskRequests),
                       [](const void* val, const int size) -> bool { return true; }) != ErrorCode::Success) {
-                std::cerr << "TiKV Merge operation failed on key: " << i << std::endl;
+                std::cerr << type << " Merge failed on key: " << i << std::endl;
+                ++mergeFailures;
             }
-	}
+        }
     }
     t2 = std::chrono::high_resolution_clock::now();
     std::cout << "avg merge time: "
               << (std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() /
                   (float)(totalNum * mergeIters))
               << "us" << std::endl;
+    BOOST_CHECK_EQUAL(mergeFailures, 0);
 
     std::string value;
-    if (db->Get(0, &value, MaxTimeout, &(workspace.m_diskRequests)) != ErrorCode::Success || value.empty()) {
-        std::cerr << "Get operation failed on key: 0" << std::endl;
-    }
+    auto getResult = db->Get(0, &value, MaxTimeout, &(workspace.m_diskRequests));
+    BOOST_CHECK_MESSAGE(getResult == ErrorCode::Success && !value.empty(),
+                        type + " Get failed on key 0");
 
-    if (db->Delete(0) != ErrorCode::Success) {
-        std::cerr << "Delete operation failed on key: 0" << std::endl;
-    }
+    auto deleteResult = db->Delete(0);
+    BOOST_CHECK_MESSAGE(deleteResult == ErrorCode::Success,
+                        type + " Delete failed on key 0");
 
     std::string deletedValue;
-    if (db->Get(0, &deletedValue, MaxTimeout, &(workspace.m_diskRequests)) == ErrorCode::Success) {
-        std::cerr << "Delete validation failed: key 0 still exists." << std::endl;
-    }
+    auto deletedGetResult = db->Get(0, &deletedValue, MaxTimeout, &(workspace.m_diskRequests));
+    BOOST_CHECK_MESSAGE(deletedGetResult != ErrorCode::Success,
+                        type + " Delete validation failed: key 0 still exists");
 
     Search(db, internalResultNum, totalNum, 10, debug, workspace);
 
     db->ForceCompaction();
     db->ShutDown();
-
-    // if (type == "RocksDB") {
-    //     db.reset(new RocksDBIO(path.c_str(), true));
-    //     Search(db, internalResultNum, totalNum, 10, debug);
-    //     db->ForceCompaction();
-    //     db->ShutDown();
-    // }
 }
 
 BOOST_AUTO_TEST_SUITE(KVTest)

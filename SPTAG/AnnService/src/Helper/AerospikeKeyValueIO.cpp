@@ -98,6 +98,8 @@ AerospikeKeyValueIO::AerospikeKeyValueIO(const std::string &host, uint16_t port,
     {
         SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Aerospike connect failed: code=%d message=%s\n", err.code,
                      err.message);
+        fprintf(stderr, "Aerospike connect failed: host=%s port=%u code=%d message=%s\n",
+                m_host.c_str(), m_port, err.code, err.message);
     }
 #endif
 }
