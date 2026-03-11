@@ -346,6 +346,8 @@ template <typename ValueType> class ExtraDynamicSearcher : public IExtraSearcher
             std::string ns = SPTAG_AEROSPIKE_DEFAULT_NAMESPACE;
             std::string setName = SPTAG_AEROSPIKE_DEFAULT_SET;
             std::string valueBin = SPTAG_AEROSPIKE_DEFAULT_BIN;
+            std::string user;
+            std::string password;
 
             if (const char *envHost = std::getenv("SPTAG_AEROSPIKE_HOST"))
             {
@@ -356,7 +358,7 @@ template <typename ValueType> class ExtraDynamicSearcher : public IExtraSearcher
                 try
                 {
                     auto parsed = std::stoul(envPort);
-                    if (parsed <= std::numeric_limits<uint16_t>::max())
+                    if (parsed > 0 && parsed <= std::numeric_limits<uint16_t>::max())
                     {
                         port = static_cast<uint16_t>(parsed);
                     }
@@ -378,8 +380,16 @@ template <typename ValueType> class ExtraDynamicSearcher : public IExtraSearcher
             {
                 valueBin = envBin;
             }
+            if (const char *envUser = std::getenv("SPTAG_AEROSPIKE_USER"))
+            {
+                user = envUser;
+            }
+            if (const char *envPassword = std::getenv("SPTAG_AEROSPIKE_PASSWORD"))
+            {
+                password = envPassword;
+            }
 
-            db.reset(new Helper::AerospikeKeyValueIO(host, port, ns, setName, valueBin));
+            db.reset(new Helper::AerospikeKeyValueIO(host, port, ns, setName, valueBin, user, password));
 #else
             SPTAGLIB_LOG(
                 Helper::LogLevel::LL_Error,

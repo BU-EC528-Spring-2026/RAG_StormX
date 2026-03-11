@@ -17,7 +17,8 @@ class AerospikeKeyValueIO final : public KeyValueIO
 {
   public:
     AerospikeKeyValueIO(const std::string &host, uint16_t port, const std::string &nameSpace,
-                        const std::string &setName, const std::string &valueBin);
+                        const std::string &setName, const std::string &valueBin,
+                        const std::string &user = "", const std::string &password = "");
     ~AerospikeKeyValueIO() override;
 
     void ShutDown() override;
@@ -58,6 +59,8 @@ class AerospikeKeyValueIO final : public KeyValueIO
     std::string m_namespace;
     std::string m_setName;
     std::string m_valueBin;
+    std::string m_user;
+    std::string m_password;
 
     bool m_connected;
     as_config m_config;

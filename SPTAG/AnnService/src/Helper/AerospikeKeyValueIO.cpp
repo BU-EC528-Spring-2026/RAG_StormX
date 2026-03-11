@@ -1,6 +1,7 @@
 #include "inc/Helper/AerospikeKeyValueIO.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -76,10 +77,12 @@ bool BatchReadCallback(const as_batch_read *results, uint32_t n, void *udata)
 #endif
 
 AerospikeKeyValueIO::AerospikeKeyValueIO(const std::string &host, uint16_t port, const std::string &nameSpace,
-                                         const std::string &setName, const std::string &valueBin)
+                                         const std::string &setName, const std::string &valueBin,
+                                         const std::string &user, const std::string &password)
     :
 #ifdef AEROSPIKE
-      m_host(host), m_port(port), m_namespace(nameSpace), m_setName(setName), m_valueBin(valueBin), m_connected(false)
+      m_host(host), m_port(port), m_namespace(nameSpace), m_setName(setName), m_valueBin(valueBin), m_user(user),
+      m_password(password), m_connected(false)
 #else
       m_connected(false)
 #endif
@@ -87,19 +90,35 @@ AerospikeKeyValueIO::AerospikeKeyValueIO(const std::string &host, uint16_t port,
 #ifdef AEROSPIKE
     as_config_init(&m_config);
     as_config_add_host(&m_config, m_host.c_str(), m_port);
+
+    if (!m_user.empty())
+    {
+        as_status authStatus = as_config_set_user(&m_config, m_user.c_str(), m_password.c_str());
+        if (authStatus != AEROSPIKE_OK)
+        {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                         "Aerospike auth config failed: status=%d user=%s\n",
+                         authStatus, m_user.c_str());
+            fprintf(stderr, "Aerospike auth config failed: host=%s port=%u status=%d user=%s\n",
+                    m_host.c_str(), m_port, authStatus, m_user.c_str());
+        }
+    }
+
     aerospike_init(&m_as, &m_config);
 
-    as_error err;
+    as_error err{};
     if (aerospike_connect(&m_as, &err) == AEROSPIKE_OK)
     {
         m_connected = true;
     }
     else
     {
-        SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Aerospike connect failed: code=%d message=%s\n", err.code,
-                     err.message);
-        fprintf(stderr, "Aerospike connect failed: host=%s port=%u code=%d message=%s\n",
-                m_host.c_str(), m_port, err.code, err.message);
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                     "Aerospike connect failed: host=%s port=%u namespace=%s set=%s code=%d message=%s\n",
+                     m_host.c_str(), m_port, m_namespace.c_str(), m_setName.c_str(), err.code, err.message);
+        fprintf(stderr, "Aerospike connect failed: host=%s port=%u namespace=%s set=%s user=%s code=%d message=%s\n",
+                m_host.c_str(), m_port, m_namespace.c_str(), m_setName.c_str(),
+                m_user.empty() ? "(none)" : m_user.c_str(), err.code, err.message);
     }
 #endif
 }
@@ -162,7 +181,7 @@ ErrorCode AerospikeKeyValueIO::Get(const SizeType key, std::string *value, const
     }
 
 #ifdef AEROSPIKE
-    as_error err;
+    as_error err{};
     as_policy_read policy;
     as_policy_read_init(&policy);
     policy.base.total_timeout = static_cast<uint32_t>(ToMilliseconds(timeout).count());
@@ -179,6 +198,14 @@ ErrorCode AerospikeKeyValueIO::Get(const SizeType key, std::string *value, const
     {
         if (record != nullptr)
             as_record_destroy(record);
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                     "Aerospike Get failed: key=%lld host=%s port=%u namespace=%s set=%s bin=%s status=%d code=%d message=%s\n",
+                     static_cast<long long>(key), m_host.c_str(), m_port, m_namespace.c_str(), m_setName.c_str(),
+                     m_valueBin.c_str(), status, err.code, err.message);
+        fprintf(stderr,
+                "Aerospike Get failed: key=%lld host=%s port=%u namespace=%s set=%s bin=%s status=%d code=%d message=%s\n",
+                static_cast<long long>(key), m_host.c_str(), m_port, m_namespace.c_str(), m_setName.c_str(),
+                m_valueBin.c_str(), status, err.code, err.message);
         return ErrorCode::Fail;
     }
 
@@ -186,6 +213,11 @@ ErrorCode AerospikeKeyValueIO::Get(const SizeType key, std::string *value, const
     if (bytes == nullptr)
     {
         as_record_destroy(record);
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                     "Aerospike Get failed: key=%lld missing bin '%s' in namespace=%s set=%s\n",
+                     static_cast<long long>(key), m_valueBin.c_str(), m_namespace.c_str(), m_setName.c_str());
+        fprintf(stderr, "Aerospike Get failed: key=%lld missing bin '%s' in namespace=%s set=%s\n",
+                static_cast<long long>(key), m_valueBin.c_str(), m_namespace.c_str(), m_setName.c_str());
         return ErrorCode::Fail;
     }
 
@@ -193,6 +225,11 @@ ErrorCode AerospikeKeyValueIO::Get(const SizeType key, std::string *value, const
     if (raw == nullptr && bytes->size > 0)
     {
         as_record_destroy(record);
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                     "Aerospike Get failed: key=%lld invalid bytes for bin '%s' size=%u\n",
+                     static_cast<long long>(key), m_valueBin.c_str(), bytes->size);
+        fprintf(stderr, "Aerospike Get failed: key=%lld invalid bytes for bin '%s' size=%u\n",
+                static_cast<long long>(key), m_valueBin.c_str(), bytes->size);
         return ErrorCode::Fail;
     }
 
@@ -230,7 +267,7 @@ ErrorCode AerospikeKeyValueIO::MultiGet(const std::vector<SizeType> &keys, std::
         as_key_init_int64(as_batch_keyat(&batch, i), m_namespace.c_str(), m_setName.c_str(), static_cast<int64_t>(keys[i]));
     }
 
-    as_error err;
+    as_error err{};
     as_policy_batch policy;
     as_policy_batch_init(&policy);
     policy.base.total_timeout = static_cast<uint32_t>(ToMilliseconds(timeout).count());
@@ -241,6 +278,14 @@ ErrorCode AerospikeKeyValueIO::MultiGet(const std::vector<SizeType> &keys, std::
     as_batch_destroy(&batch);
     if (status != AEROSPIKE_OK || ctx.status != ErrorCode::Success)
     {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                     "Aerospike MultiGet failed: keys=%u host=%s port=%u namespace=%s set=%s bin=%s status=%d code=%d message=%s\n",
+                     static_cast<uint32_t>(keys.size()), m_host.c_str(), m_port, m_namespace.c_str(),
+                     m_setName.c_str(), m_valueBin.c_str(), status, err.code, err.message);
+        fprintf(stderr,
+                "Aerospike MultiGet failed: keys=%u host=%s port=%u namespace=%s set=%s bin=%s status=%d code=%d message=%s\n",
+                static_cast<uint32_t>(keys.size()), m_host.c_str(), m_port, m_namespace.c_str(),
+                m_setName.c_str(), m_valueBin.c_str(), status, err.code, err.message);
         return ErrorCode::Fail;
     }
     return ErrorCode::Success;
@@ -333,7 +378,7 @@ ErrorCode AerospikeKeyValueIO::Merge(const SizeType key, const std::string &valu
     }
 
 #ifdef AEROSPIKE
-    as_error err;
+    as_error err{};
     as_policy_operate policy;
     as_policy_operate_init(&policy);
     policy.base.total_timeout = static_cast<uint32_t>(ToMilliseconds(timeout).count());
@@ -362,8 +407,28 @@ ErrorCode AerospikeKeyValueIO::Merge(const SizeType key, const std::string &valu
     // Append can fail on missing records. Fallback to put creates the record with appended bytes.
     if (err.code == AEROSPIKE_ERR_RECORD_NOT_FOUND)
     {
-        return Put(key, value, timeout, nullptr);
+        auto putRet = Put(key, value, timeout, nullptr);
+        if (putRet != ErrorCode::Success)
+        {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                         "Aerospike Merge fallback Put failed: key=%lld host=%s port=%u namespace=%s set=%s bin=%s\n",
+                         static_cast<long long>(key), m_host.c_str(), m_port, m_namespace.c_str(), m_setName.c_str(),
+                         m_valueBin.c_str());
+            fprintf(stderr,
+                    "Aerospike Merge fallback Put failed: key=%lld host=%s port=%u namespace=%s set=%s bin=%s\n",
+                    static_cast<long long>(key), m_host.c_str(), m_port, m_namespace.c_str(), m_setName.c_str(),
+                    m_valueBin.c_str());
+        }
+        return putRet;
     }
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                 "Aerospike Merge failed: key=%lld host=%s port=%u namespace=%s set=%s bin=%s status=%d code=%d message=%s\n",
+                 static_cast<long long>(key), m_host.c_str(), m_port, m_namespace.c_str(), m_setName.c_str(),
+                 m_valueBin.c_str(), status, err.code, err.message);
+    fprintf(stderr,
+            "Aerospike Merge failed: key=%lld host=%s port=%u namespace=%s set=%s bin=%s status=%d code=%d message=%s\n",
+            static_cast<long long>(key), m_host.c_str(), m_port, m_namespace.c_str(), m_setName.c_str(),
+            m_valueBin.c_str(), status, err.code, err.message);
     return ErrorCode::Fail;
 #else
     (void)key;
@@ -381,7 +446,7 @@ ErrorCode AerospikeKeyValueIO::Delete(SizeType key)
     }
 
 #ifdef AEROSPIKE
-    as_error err;
+    as_error err{};
     as_key akey;
     as_key_init_int64(&akey, m_namespace.c_str(), m_setName.c_str(), static_cast<int64_t>(key));
 
@@ -391,6 +456,14 @@ ErrorCode AerospikeKeyValueIO::Delete(SizeType key)
     {
         return ErrorCode::Success;
     }
+    SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                 "Aerospike Delete failed: key=%lld host=%s port=%u namespace=%s set=%s status=%d code=%d message=%s\n",
+                 static_cast<long long>(key), m_host.c_str(), m_port, m_namespace.c_str(), m_setName.c_str(),
+                 status, err.code, err.message);
+    fprintf(stderr,
+            "Aerospike Delete failed: key=%lld host=%s port=%u namespace=%s set=%s status=%d code=%d message=%s\n",
+            static_cast<long long>(key), m_host.c_str(), m_port, m_namespace.c_str(), m_setName.c_str(), status,
+            err.code, err.message);
     return ErrorCode::Fail;
 #else
     (void)key;
@@ -402,7 +475,7 @@ ErrorCode AerospikeKeyValueIO::Delete(SizeType key)
 ErrorCode AerospikeKeyValueIO::PutRaw(const SizeType key, const uint8_t *value, uint32_t valueSize,
                                       const std::chrono::microseconds &timeout)
 {
-    as_error err;
+    as_error err{};
     as_policy_write policy;
     as_policy_write_init(&policy);
     policy.base.total_timeout = static_cast<uint32_t>(ToMilliseconds(timeout).count());
@@ -424,6 +497,17 @@ ErrorCode AerospikeKeyValueIO::PutRaw(const SizeType key, const uint8_t *value, 
     as_status status = aerospike_key_put(&m_as, &err, &policy, &akey, &rec);
     as_record_destroy(&rec);
     as_key_destroy(&akey);
+    if (status != AEROSPIKE_OK)
+    {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                     "Aerospike Put failed: key=%lld size=%u host=%s port=%u namespace=%s set=%s bin=%s status=%d code=%d message=%s\n",
+                     static_cast<long long>(key), valueSize, m_host.c_str(), m_port, m_namespace.c_str(),
+                     m_setName.c_str(), m_valueBin.c_str(), status, err.code, err.message);
+        fprintf(stderr,
+                "Aerospike Put failed: key=%lld size=%u host=%s port=%u namespace=%s set=%s bin=%s status=%d code=%d message=%s\n",
+                static_cast<long long>(key), valueSize, m_host.c_str(), m_port, m_namespace.c_str(),
+                m_setName.c_str(), m_valueBin.c_str(), status, err.code, err.message);
+    }
     return status == AEROSPIKE_OK ? ErrorCode::Success : ErrorCode::Fail;
 }
 #endif
