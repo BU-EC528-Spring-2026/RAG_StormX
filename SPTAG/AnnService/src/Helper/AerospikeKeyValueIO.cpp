@@ -26,6 +26,21 @@ namespace SPTAG::Helper
 #ifdef AEROSPIKE
 namespace
 {
+bool IsAuthConfigSuccess(bool status)
+{
+    return status;
+}
+
+bool IsAuthConfigSuccess(as_status status)
+{
+    return status == AEROSPIKE_OK;
+}
+
+bool IsAuthConfigSuccess(int status)
+{
+    return status == static_cast<int>(AEROSPIKE_OK);
+}
+
 struct BatchReadContext
 {
     std::vector<std::string> *values;
@@ -93,14 +108,14 @@ AerospikeKeyValueIO::AerospikeKeyValueIO(const std::string &host, uint16_t port,
 
     if (!m_user.empty())
     {
-        as_status authStatus = as_config_set_user(&m_config, m_user.c_str(), m_password.c_str());
-        if (authStatus != AEROSPIKE_OK)
+        auto authStatus = as_config_set_user(&m_config, m_user.c_str(), m_password.c_str());
+        if (!IsAuthConfigSuccess(authStatus))
         {
             SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
-                         "Aerospike auth config failed: status=%d user=%s\n",
-                         authStatus, m_user.c_str());
-            fprintf(stderr, "Aerospike auth config failed: host=%s port=%u status=%d user=%s\n",
-                    m_host.c_str(), m_port, authStatus, m_user.c_str());
+                         "Aerospike auth config failed: user=%s\n",
+                         m_user.c_str());
+            fprintf(stderr, "Aerospike auth config failed: host=%s port=%u user=%s\n",
+                    m_host.c_str(), m_port, m_user.c_str());
         }
     }
 
