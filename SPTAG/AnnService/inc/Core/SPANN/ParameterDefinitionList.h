@@ -85,7 +85,7 @@ DefineSSDParameter(m_zstdCompressLevel, int, 0, "ZstdCompressLevel")
 // Building
 DefineSSDParameter(m_internalResultNum, int, 64, "InternalResultNum")
 DefineSSDParameter(m_postingPageLimit, int, 3, "PostingPageLimit")
-DefineSSDParameter(m_replicaCount, int, 8, "ReplicaCount")
+DefineSSDParameter(m_replicaCount, int, 1, "ReplicaCount")
 DefineSSDParameter(m_outputEmptyReplicaID, bool, false, "OutputEmptyReplicaID")
 DefineSSDParameter(m_batches, int, 1, "Batches")
 DefineSSDParameter(m_tmpdir, std::string, std::string("."), "TmpDir")
