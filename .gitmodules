@@ -1,0 +1,13 @@
+[submodule "SPTAG/ThirdParty/zstd"]
+	path = SPTAG/ThirdParty/zstd
+	url = https://github.com/facebook/zstd
+	branch = release
+[submodule "SPTAG/ThirdParty/spdk"]
+	path = SPTAG/ThirdParty/spdk
+	url = https://github.com/spdk/spdk
+[submodule "SPTAG/ThirdParty/isal-l_crypto"]
+	path = SPTAG/ThirdParty/isal-l_crypto
+	url = https://github.com/intel/isa-l_crypto
+[submodule "SPTAG/ThirdParty/RocksDB"]
+	path = SPTAG/ThirdParty/RocksDB
+	url = https://github.com/PtilopsisL/rocksdb

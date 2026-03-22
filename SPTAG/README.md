@@ -49,6 +49,18 @@ The searches in the trees and the graph are iteratively conducted.
 
 ### **Fast clone**
 
+If you are building the copy of SPTAG that lives inside this repository, clone the parent repository with submodules enabled or initialize them after cloning so `SPTAG/ThirdParty` is populated:
+
+```bash
+git clone --recurse-submodules <repo-url>
+```
+
+or, from the repository root of an existing clone:
+
+```bash
+git submodule update --init --recursive
+```
+
 ```
 set GIT_LFS_SKIP_SMUDGE=1
 git clone --recurse-submodules https://github.com/microsoft/SPTAG

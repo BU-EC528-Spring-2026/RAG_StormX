@@ -6,6 +6,16 @@ The SPTAG library requires specific dependencies (GCC 8, Boost, SWIG, etc.) that
 I have already built the library inside a container and synced the results (the Release folder and SPTAG.py) back into this repository. You can now use the Docker image to run or recompile the code without worrying about local dependencies.
 
 ## 1. Initial Setup
+Before building, make sure the SPTAG third-party submodules are populated. If you are cloning this repository for the first time, use:
+```bash
+git clone --recurse-submodules <repo-url>
+```
+
+If you already cloned the repository without submodules, run this from the repository root:
+```bash
+git submodule update --init --recursive
+```
+
 To get started, you must build the Docker image on your own machine. This image contains the environment needed to run the SPTAG binaries.
 
 Run the following command from the root of the repository:
