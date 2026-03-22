@@ -5,6 +5,48 @@ The SPTAG library requires specific dependencies (GCC 8, Boost, SWIG, etc.) that
 
 I have already built the library inside a container and synced the results (the Release folder and SPTAG.py) back into this repository. You can now use the Docker image to run or recompile the code without worrying about local dependencies.
 
+## Summary
+SPTAG:
+	This is an advanced ANN algorithm that find the nearest neighbor of a vector in high-dimensional space(potentially  thousands of dimension)
+	
+	It avoid the dimensionality curse in conventional ANN algorithm by not splitting on all dimensions like what quad-tree/oct-tree does. It use some clustered tree, so the branch doesn't split the space exponentially.(ie the branching factor is way smaller)
+	
+	Once we go to the approximate region via the tree, SPTAG provide Relative Neighborhood Graph for that region(the vectors in that region are connected)  Then we just do greedy search in the graph to find the approximated closet vector.
+	
+Role of aerospike.
+	SPTAG can return the nearest vector index given an input vector index, but someone need to retrieve content corresponding to the index.
+	
+	A simple dict in python won't work since there are too much data which will use up the RAM, and it's not persistent(it will be lost when power is off)
+	
+	And there are so much data that one computer cannot store all of them. Multiple computers are needed, meaning simple dict won't work.
+	
+	If there are many users trying to access the simple dict at the same time, there will be terrible lock conflict.
+	
+	Aerospike solve these problems by storing data in SSD on multiple machines. It provides a distributed system that can handle lots of users. 
+
+	
+	
+TIKV vs Aerospike 
+	Read-heavy
+	
+	TIKV is more write friendly but not read friendly
+	
+	For TIKV, if it want to read content for a computed neightbor vector index from SPTAG, if content is not in RAM'S block cache, it needs to search through multiple level of disk files, causing latency spike.
+	While Aerospike skip the OS, directly read the SSD.
+	Hence aerospike read latency is always <1ms while TIKV can be UP to 10 ms.
+	
+	On consistency, compared to TIKV,  Aerospike sacrificed a bit on consistency, with big gain on performance.
+	
+	
+	On locating things:
+		TIKV use LSM tree(this is a main stream approach).
+			It have multiple intermediate steps between hash index and disk.
+				Causing write and read amplification
+		Aerospike:
+			It directly store the disk offset for each hash index. No intermediate steps, very fast.
+Read and write amplification remain 1X.
+
+
 ## 1. Initial Setup
 Before building, make sure the SPTAG third-party submodules are populated. If you are cloning this repository for the first time, use:
 ```bash
