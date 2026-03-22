@@ -1,0 +1,13 @@
+
+# Ignore TiKV database storage
+tikv_data/
+
+# Ignore massive datasets (adjust extensions as needed for SPTAG)
+sift1b
+*.u8bin
+*.bin
+truth
+*.fvecs
+*.bvecs
+*.ivecs
+datasets/
