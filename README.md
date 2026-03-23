@@ -34,6 +34,7 @@ To support the massive scale of billion-vector searches and distributed serving 
 
 To provision a single high-performance VM and run the environment via Docker, execute the following:
 
+In the Google Cloud Shell (press G and S in the google cloud VM-instance window)
 ```bash
 # 1. Provision the GCP Instance
 gcloud compute instances create nvme-c2 \
@@ -41,13 +42,15 @@ gcloud compute instances create nvme-c2 \
     --machine-type=c2-standard-8 \
     --subnet=default \
     --tags=http-server,https-server \
-    --create-disk=auto-delete=yes,boot=yes,device-name=slow-disk,name=slow-disk,size=250GB,type=pd-standard,image-family=ubuntu-2404-lts,image-project=ubuntu-os-cloud \
+    --create-disk=auto-delete=yes,boot=yes,device-name=slow-disk,name=slow-disk,size=250GB,type=pd-standard,image-family=ubuntu-2404-lts-amd64,image-project=ubuntu-os-cloud \
     --local-ssd=interface=NVME \
-    --service-account=175891054305-compute@developer.gserviceaccount.com \
     --scopes=default \
-    --labels=goog-ops-agent=v2-x86-template \
-    --metadata=enable-osconfig=TRUE,startup-script="#!/bin/bash"
+    --labels=goog-ops-agent=v2-x86-template
+```
 
+Then SSH into the provisioned VM, and run the following:
+
+```bash
 # 2. Clone the Repository
 git clone https://github.com/BU-EC528-Spring-2026/RAG_StormX.git
 cd RAG_StormX/SPTAG
