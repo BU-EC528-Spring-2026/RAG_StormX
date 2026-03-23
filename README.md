@@ -94,7 +94,7 @@ set -euo pipefail
 # =========================
 # Set your GCP project, zone, VM specs, cluster names, and Aerospike package details here before running.
 PROJECT_ID="your-gcp-project-id"
-ZONE="us-central1-a"
+ZONE="east4-b"
 MACHINE_TYPE="n2-standard-4"
 IMAGE_FAMILY="ubuntu-2404-lts-amd64"
 IMAGE_PROJECT="ubuntu-os-cloud"
@@ -303,7 +303,7 @@ chmod +x deploy-aerospike.sh
 **4. Verification and Testing**
 SSH into a node:
 ```bash
-gcloud compute ssh aerospike-node-1 --zone us-central1-a
+gcloud compute ssh aerospike-node-1 --zone east4-b
 ```
 Check status:
 ```bash
@@ -324,6 +324,6 @@ SELECT * FROM sptag_data.testset WHERE PK='key1';
 The most important log for startup issues is `/var/log/startup-aerospike.log`. 
 If something fails heavily, you can wipe the cluster and start fresh:
 ```bash
-gcloud compute instances delete aerospike-node-1 aerospike-node-2 --zone us-central1-a
+gcloud compute instances delete aerospike-node-1 aerospike-node-2 --zone east4-b
 gcloud compute firewall-rules delete aerospike-internal
 ```
