@@ -30,36 +30,6 @@ To support the massive scale of billion-vector searches and distributed serving 
 
 ## 3) Setup Guidance
 
-### Setting Up a Single Node
-
-To provision a single high-performance VM and run the environment via Docker, execute the following:
-
-In the Google Cloud Shell (press G and S in the google cloud VM-instance window)
-```bash
-# 1. Provision the GCP Instance
-gcloud compute instances create nvme-c2 \
-    --zone=us-east4-b \
-    --machine-type=c2-standard-8 \
-    --subnet=default \
-    --tags=http-server,https-server \
-    --create-disk=auto-delete=yes,boot=yes,device-name=slow-disk,name=slow-disk,size=250GB,type=pd-standard,image-family=ubuntu-2404-lts-amd64,image-project=ubuntu-os-cloud \
-    --local-ssd=interface=NVME \
-    --scopes=default \
-    --labels=goog-ops-agent=v2-x86-template
-```
-
-Then SSH into the provisioned VM, and run the following:
-
-```bash
-# 2. Clone the Repository
-git clone https://github.com/BU-EC528-Spring-2026/RAG_StormX.git
-cd RAG_StormX/SPTAG
-
-# 3. Build and Run the Docker Image
-docker build -t sptag .
-bash launch_doccker.sh
-```
-
 ### Aerospike 2-Node Cluster on GCP
 
 This guide walks through how to recreate a 2-node Aerospike cluster on Google Cloud using a deployment script.
@@ -81,6 +51,11 @@ Before starting, ensure:
 **1. Find and Set Your Project**
 ```bash
 gcloud projects list
+```
+Note your Project_ID, you will need it in the next step. 
+
+then run:
+```bash 
 gcloud config set project YOUR_PROJECT_ID
 gcloud config get-value project
 ```
@@ -96,8 +71,8 @@ set -euo pipefail
 # USER-EDITABLE SETTINGS
 # =========================
 # Set your GCP project, zone, VM specs, cluster names, and Aerospike package details here before running.
-PROJECT_ID="your-gcp-project-id"
-ZONE="east4-b"
+PROJECT_ID=your-gcp-project-id
+ZONE="us-east4-b"
 MACHINE_TYPE="n2-standard-4"
 IMAGE_FAMILY="ubuntu-2404-lts-amd64"
 IMAGE_PROJECT="ubuntu-os-cloud"
@@ -306,7 +281,7 @@ chmod +x deploy-aerospike.sh
 **4. Verification and Testing**
 SSH into a node:
 ```bash
-gcloud compute ssh aerospike-node-1 --zone east4-b
+gcloud compute ssh aerospike-node-1 --zone us-east4-b
 ```
 Check status:
 ```bash
@@ -327,6 +302,95 @@ SELECT * FROM sptag_data.testset WHERE PK='key1';
 The most important log for startup issues is `/var/log/startup-aerospike.log`. 
 If something fails heavily, you can wipe the cluster and start fresh:
 ```bash
-gcloud compute instances delete aerospike-node-1 aerospike-node-2 --zone east4-b
+gcloud compute instances delete aerospike-node-1 aerospike-node-2 --zone us-east4-b
 gcloud compute firewall-rules delete aerospike-internal
+```
+
+### Setting Up a Single SPTAG Node
+
+To provision a single high-performance VM and run the environment via Docker, execute the following:
+
+In the Google Cloud Shell (press G and S in the google cloud VM-instance window)
+```bash
+# 1. Provision the GCP Instance
+gcloud compute instances create sptag-node \
+    --zone=us-east4-b \
+    --machine-type=c2-standard-8 \
+    --subnet=default \
+    --tags=http-server,https-server \
+    --create-disk=auto-delete=yes,boot=yes,device-name=slow-disk,name=slow-disk,size=250GB,type=pd-standard,image-family=ubuntu-2404-lts-amd64,image-project=ubuntu-os-cloud \
+    --local-ssd=interface=NVME \
+    --scopes=default \
+    --labels=goog-ops-agent=v2-x86-template
+```
+
+Then SSH into the provisioned VM, and run the following:
+
+```bash
+# 1. Install all of the required tools (git, Docker, etc.):
+sudo apt-get update
+sudo apt-get install -y \
+    git \
+    build-essential \
+    cmake \
+    apt-utils \
+    docker.io \
+    pkg-config \
+    libssl-dev \
+    libaio-dev \
+    python3-pip \
+    curl \
+    unzip \
+    wget
+
+sudo systemctl enable docker
+sudo systemctl start docker
+
+# 2. Clone the Repository (with submodules)
+# You will need to authenticate with GitHub!!!!! We will that as an excercise to the reader :) 
+# (Just add an ssh key :^) )
+git clone --recursive git@github.com:BU-EC528-Spring-2026/RAG_StormX.git
+cd RAG_StormX/SPTAG
+
+# 3. Build and Run the Docker Image
+sudo docker build -t sptag .
+sudo bash launch_docker.sh
+```
+
+You should see something along the lines of:
+
+```bash
+root@[bunch of numbers and letters]:/app# 
+```
+
+From here, you will have to navigate to the GCP VM-instances, and note the internal IP address of one of your aerospike nodes. Use it to run the following:
+
+```bash
+cd /app
+rm -rf build/build-aero
+ cmake -S . -B build/build-aero -DAEROSPIKE=ON \
+   -DAEROSPIKE_INCLUDE_DIR=/usr/include \
+   -DAEROSPIKE_CLIENT_LIBRARY=/lib/libaerospike.so \
+   -DAEROSPIKE_DEFAULT_HOST=[Aerospike internal ip address]
+ cmake --build build/build-aero -j8
+```
+
+This should show you cmake outputs – it will throw some warnings, but some of them come directly from the SPTAG codebase, and we only added 2 more warnings to it (unused authentication methods that will be refined later down the line)
+
+after your project has been built, run the following commands (pay attention to the variables that you have to provide):
+
+```bash
+cd /app
+rm -f perftest_vector.bin perftest_meta.bin perftest_metaidx.bin \
+      perftest_addvector.bin perftest_addmeta.bin perftest_addmetaidx.bin \
+      perftest_query.bin perftest_batchtruth.*
+rm -rf proidx/spann_index_aero proidx/spann_index_aero_*
+export BENCHMARK_CONFIG=/app/benchmark.aerospike.ini
+export BENCHMARK_OUTPUT=/app/results/benchmark_aerospike.json
+export SPTAG_AEROSPIKE_HOST=[]
+export SPTAG_AEROSPIKE_PORT=3000
+export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
+export SPTAG_AEROSPIKE_SET=sptag
+export SPTAG_AEROSPIKE_BIN=value
+./Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=test_suite
 ```
