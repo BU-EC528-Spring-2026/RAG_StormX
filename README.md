@@ -1,151 +1,329 @@
-# SPTAG Development Environment Guide
+# Distributed KV Database for SPTAG
 
-## Overview
-The SPTAG library requires specific dependencies (GCC 8, Boost, SWIG, etc.) that are difficult to manage locally. To solve this, we use a Docker-based workflow.
+Welcome to the project repository focused on building and integrating a distributed Key-Value (KV) database for SPTAG. 
 
-I have already built the library inside a container and synced the results (the Release folder and SPTAG.py) back into this repository. You can now use the Docker image to run or recompile the code without worrying about local dependencies.
+## Index
+1. [The Problem Statement](#1-the-problem-statement)
+2. [Current Progress](#2-current-progress)
+3. [Setup Guidance](#3-setup-guidance)
 
-## Summary
-SPTAG:
-	This is an advanced ANN algorithm that find the nearest neighbor of a vector in high-dimensional space(potentially  thousands of dimension)
-	
-	It avoid the dimensionality curse in conventional ANN algorithm by not splitting on all dimensions like what quad-tree/oct-tree does. It use some clustered tree, so the branch doesn't split the space exponentially.(ie the branching factor is way smaller)
-	
-	Once we go to the approximate region via the tree, SPTAG provide Relative Neighborhood Graph for that region(the vectors in that region are connected)  Then we just do greedy search in the graph to find the approximated closet vector.
-	
-Role of aerospike.
-	SPTAG can return the nearest vector index given an input vector index, but someone need to retrieve content corresponding to the index.
-	
-	A simple dict in python won't work since there are too much data which will use up the RAM, and it's not persistent(it will be lost when power is off)
-	
-	And there are so much data that one computer cannot store all of them. Multiple computers are needed, meaning simple dict won't work.
-	
-	If there are many users trying to access the simple dict at the same time, there will be terrible lock conflict.
-	
-	Aerospike solve these problems by storing data in SSD on multiple machines. It provides a distributed system that can handle lots of users. 
+---
 
-	
-	
-TIKV vs Aerospike 
-	Read-heavy
-	
-	TIKV is more write friendly but not read friendly
-	
-	For TIKV, if it want to read content for a computed neightbor vector index from SPTAG, if content is not in RAM'S block cache, it needs to search through multiple level of disk files, causing latency spike.
-	While Aerospike skip the OS, directly read the SSD.
-	Hence aerospike read latency is always <1ms while TIKV can be UP to 10 ms.
-	
-	On consistency, compared to TIKV,  Aerospike sacrificed a bit on consistency, with big gain on performance.
-	
-	
-	On locating things:
-		TIKV use LSM tree(this is a main stream approach).
-			It have multiple intermediate steps between hash index and disk.
-				Causing write and read amplification
-		Aerospike:
-			It directly store the disk offset for each hash index. No intermediate steps, very fast.
-Read and write amplification remain 1X.
+## 1) The Problem Statement
 
+**About SPTAG**
+SPTAG (Space Partition Tree And Graph) is an open-source library released by Microsoft Research and Bing for fast, large-scale vector approximate nearest neighbor (ANN) search. It assumes samples are represented as vectors compared by L2 or cosine distances. By combining space partition trees (like KD-trees or balanced k-means trees) with relative neighborhood graphs (RNG), SPTAG achieves highly efficient and accurate searches. Recent highlights of the library include incremental in-place updates (online vector deletion and insertion) and distributed serving across multiple machines.
 
-## 1. Initial Setup
-Before building, make sure the SPTAG third-party submodules are populated. If you are cloning this repository for the first time, use:
+**Why a Distributed KV Database Makes Sense**
+To support the massive scale of billion-vector searches and distributed serving environments, relying purely on in-memory or single-node storage architectures is a bottleneck. A distributed KV database allows SPTAG to persist, partition, and serve massive vector datasets concurrently across multiple machines. By shifting to a distributed KV model—especially one optimized for modern hardware like NVMe—we can ensure high availability, horizontal scalability, and extremely low-latency lookups, which are critical for real-time approximate nearest neighbor retrieval.
+
+---
+
+## 2) Current Progress
+
+* **Initial Approach:** We initially worked on integrating TiKV as our distributed storage backend. 
+* **Pivot:** Our mentor shifted their interest from integrating TiKV to having us either build our own solution from scratch or heavily modify an existing solution.
+* **Current Architecture (Aerospike):** We pivoted to using **Aerospike**. We chose Aerospike primarily because it does not rely on Log-Structured Merge (LSM) trees and has the unique ability to write directly to NVMe drives using SPDK, completely bypassing OS buffers for massive I/O performance gains.
+* **Status:** We have successfully run SPTAG on Aerospike! This was achieved by directly modifying the SPTAG source code to include an Aerospike client integration. The current implementation is heavily "vibecoded" (a rapid, experimental proof-of-concept), so our immediate next focus is to refactor the code, ensure the architecture makes logical sense, and optimize for stability.
+
+---
+
+## 3) Setup Guidance
+
+### Setting Up a Single Node
+
+To provision a single high-performance VM and run the environment via Docker, execute the following:
+
 ```bash
-git clone --recurse-submodules <repo-url>
-```
+# 1. Provision the GCP Instance
+gcloud compute instances create nvme-c2 \
+    --zone=us-east4-b \
+    --machine-type=c2-standard-8 \
+    --subnet=default \
+    --tags=http-server,https-server \
+    --create-disk=auto-delete=yes,boot=yes,device-name=slow-disk,name=slow-disk,size=250GB,type=pd-standard,image-family=ubuntu-2404-lts,image-project=ubuntu-os-cloud \
+    --local-ssd=interface=NVME \
+    --service-account=175891054305-compute@developer.gserviceaccount.com \
+    --scopes=default \
+    --labels=goog-ops-agent=v2-x86-template \
+    --metadata=enable-osconfig=TRUE,startup-script="#!/bin/bash"
 
-If you already cloned the repository without submodules, run this from the repository root:
-```bash
-git submodule update --init --recursive
-```
+# 2. Clone the Repository
+git clone https://github.com/BU-EC528-Spring-2026/RAG_StormX.git
+cd RAG_StormX/SPTAG
 
-To get started, you must build the Docker image on your own machine. This image contains the environment needed to run the SPTAG binaries.
-
-Run the following command from the root of the repository:
-```bash
+# 3. Build and Run the Docker Image
 docker build -t sptag .
+bash launch_doccker.sh
 ```
-If you are using an Apple Silicon Mac, run the following command instead. This forces Docker to build an x86_64 image via emulation, which is necessary because SPTAG’s CMake configuration includes x86-specific SIMD compiler flags.
+
+### Aerospike 2-Node Cluster on GCP
+
+This guide walks through how to recreate a 2-node Aerospike cluster on Google Cloud using a deployment script.
+This setup will:
+* Create 2 Google Compute Engine VMs
+* Install Aerospike automatically on both
+* Configure them as a 2-node cluster
+* Use local NVMe SSD storage
+* Open the required internal firewall ports for Aerospike traffic
+
+#### Prerequisites
+Before starting, ensure:
+* You have access to a Google Cloud project with billing enabled.
+* Compute Engine API is enabled (`gcloud services enable compute.googleapis.com`).
+* You are using **Google Cloud Shell** or have `gcloud` installed locally.
+
+#### Deployment Steps
+
+**1. Find and Set Your Project**
 ```bash
-docker build --platform=linux/amd64 -t sptag .
+gcloud projects list
+gcloud config set project YOUR_PROJECT_ID
+gcloud config get-value project
 ```
-**Troubleshooting for Mac M-Series chips (if build fails with OOM error):**
 
-**Step 1: Increase Docker memory limit**
+**2. Create the Deployment Script**
+Create a file named `deploy-aerospike.sh` and paste the following bash script into it. Make sure to edit the `PROJECT_ID` and `ZONE` at the top of the file to match your environment.
 
-Open Docker Desktop → Settings → Resources, set Memory Limit to at least **16 GB**（depending on your laptop performance), then click **Apply** and restart Docker.
-
-**Step 2: Limit compiler parallelism in Dockerfile**
-
-Navigate to the SPTAG directory in terminal and edit the Dockerfile:
 ```bash
-nano Dockerfile
+#!/bin/bash
+set -euo pipefail
+
+# =========================
+# USER-EDITABLE SETTINGS
+# =========================
+# Set your GCP project, zone, VM specs, cluster names, and Aerospike package details here before running.
+PROJECT_ID="your-gcp-project-id"
+ZONE="us-central1-a"
+MACHINE_TYPE="n2-standard-4"
+IMAGE_FAMILY="ubuntu-2404-lts-amd64"
+IMAGE_PROJECT="ubuntu-os-cloud"
+CLUSTER_NAME="sptag-cluster"
+NAMESPACE_NAME="sptag_data"
+NVME_DEVICE="/dev/disk/by-id/google-local-nvme-ssd-0"
+NODE1="aerospike-node-1"
+NODE2="aerospike-node-2"
+AEROSPIKE_URL="https://download.aerospike.com/artifacts/aerospike-server-community/8.1.1.1/aerospike-server-community_8.1.1.1_tools-12.1.1_ubuntu24.04_x86_64.tgz"
+AEROSPIKE_DIR="aerospike-server-community_8.1.1.1_tools-12.1.1_ubuntu24.04_x86_64"
+
+# Stop if the placeholder project ID was not changed.
+if [[ "$PROJECT_ID" == "your-gcp-project-id" ]]; then
+  echo "Please edit PROJECT_ID at the top of the script before running."
+  exit 1
+fi
+
+gcloud config set project "${PROJECT_ID}"
+
+# Create firewall rule
+gcloud compute firewall-rules create aerospike-internal \
+  --network=default \
+  --allow tcp:3000-3004 \
+  --source-tags=aerospike \
+  --target-tags=aerospike || true
+
+# =========================
+# WRITE VM STARTUP SCRIPT
+# =========================
+cat > startup-aerospike.sh <<'EOF'
+#!/bin/bash
+set -euxo pipefail
+
+exec > /var/log/startup-aerospike.log 2>&1
+export DEBIAN_FRONTEND=noninteractive
+
+CLUSTER_NAME="$(curl -fs -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/cluster-name)"
+NAMESPACE_NAME="$(curl -fs -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/namespace-name)"
+SEED_IPS_RAW="$(curl -fs -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/seed-ips || true)"
+NVME_DEVICE="$(curl -fs -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/nvme-device)"
+AEROSPIKE_URL="$(curl -fs -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/aerospike-url)"
+AEROSPIKE_DIR="$(curl -fs -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/aerospike-dir)"
+
+apt-get update
+apt-get install -y wget curl python3 tar util-linux
+
+if [ -b "$NVME_DEVICE" ]; then
+    echo "Wiping NVMe device $NVME_DEVICE..."
+    blkdiscard "$NVME_DEVICE" || true
+fi
+
+if [ ! -d "/opt/aerospike/bin" ]; then
+    mkdir -p /opt/aerospike
+    wget "$AEROSPIKE_URL" -O /tmp/aerospike.tgz
+    tar -xzf /tmp/aerospike.tgz -C /tmp
+    cd "/tmp/$AEROSPIKE_DIR"
+    ./asinstall
+fi
+
+mkdir -p /etc/aerospike
+mkdir -p /var/log/aerospike
+chown -R aerospike:aerospike /var/log/aerospike || true
+
+if[ -b "$NVME_DEVICE" ]; then
+    chown aerospike:aerospike "$(readlink -f "$NVME_DEVICE")" || true
+    usermod -aG disk aerospike || true
+fi
+
+SEED_LINES=""
+if [[ -n "${SEED_IPS_RAW}" ]]; then
+  IFS=',' read -ra SEEDS <<< "${SEED_IPS_RAW}"
+  for ip in "${SEEDS[@]}"; do
+    [[ -n "${ip}" ]] && SEED_LINES="${SEED_LINES}        mesh-seed-address-port ${ip} 3003"$'\n'
+  done
+fi
+
+cat > /etc/aerospike/aerospike.conf <<CONF
+service {
+    cluster-name ${CLUSTER_NAME}
+    proto-fd-max 15000
+}
+
+logging {
+    file /var/log/aerospike/aerospike.log {
+        context any info
+    }
+}
+
+network {
+    service { address any; port 3000 }
+    fabric { address any; port 3001 }
+    heartbeat {
+        mode mesh
+        address any
+        port 3003
+        interval 150
+        timeout 10
+${SEED_LINES}    }
+    admin { address any; port 3004 }
+}
+
+namespace ${NAMESPACE_NAME} {
+    replication-factor 2
+    default-ttl 0
+    indexes-memory-budget 4G
+
+    storage-engine device {
+        device ${NVME_DEVICE}
+    }
+}
+CONF
+
+systemctl daemon-reload
+systemctl enable aerospike
+systemctl start aerospike
+EOF
+
+chmod +x startup-aerospike.sh
+
+# =========================
+# CREATE NODE 1
+# =========================
+echo "Creating ${NODE1}..."
+gcloud compute instances create "${NODE1}" \
+  --project="${PROJECT_ID}" --zone="${ZONE}" \
+  --machine-type="${MACHINE_TYPE}" \
+  --image-family="${IMAGE_FAMILY}" --image-project="${IMAGE_PROJECT}" \
+  --boot-disk-size=30GB --boot-disk-type=pd-balanced \
+  --local-ssd=interface=nvme \
+  --tags=aerospike \
+  --metadata=cluster-name="${CLUSTER_NAME}",namespace-name="${NAMESPACE_NAME}",seed-ips="",nvme-device="${NVME_DEVICE}",aerospike-url="${AEROSPIKE_URL}",aerospike-dir="${AEROSPIKE_DIR}" \
+  --metadata-from-file=startup-script=./startup-aerospike.sh
+
+echo "Waiting for ${NODE1} IP..."
+sleep 40
+NODE1_IP=$(gcloud compute instances describe "${NODE1}" --project="${PROJECT_ID}" --zone="${ZONE}" --format="get(networkInterfaces[0].networkIP)")
+echo "${NODE1} internal IP: ${NODE1_IP}"
+
+# =========================
+# CREATE NODE 2
+# =========================
+echo "Creating ${NODE2}..."
+gcloud compute instances create "${NODE2}" \
+  --project="${PROJECT_ID}" --zone="${ZONE}" \
+  --machine-type="${MACHINE_TYPE}" \
+  --image-family="${IMAGE_FAMILY}" --image-project="${IMAGE_PROJECT}" \
+  --boot-disk-size=30GB --boot-disk-type=pd-balanced \
+  --local-ssd=interface=nvme \
+  --tags=aerospike \
+  --metadata=cluster-name="${CLUSTER_NAME}",namespace-name="${NAMESPACE_NAME}",seed-ips="${NODE1_IP}",nvme-device="${NVME_DEVICE}",aerospike-url="${AEROSPIKE_URL}",aerospike-dir="${AEROSPIKE_DIR}" \
+  --metadata-from-file=startup-script=./startup-aerospike.sh
+
+echo "Waiting for ${NODE2} IP..."
+sleep 40
+NODE2_IP=$(gcloud compute instances describe "${NODE2}" --project="${PROJECT_ID}" --zone="${ZONE}" --format="get(networkInterfaces[0].networkIP)")
+echo "${NODE2} internal IP: ${NODE2_IP}"
+
+echo "Waiting for Aerospike to finish installing on ${NODE1}..."
+sleep 60
+
+# =========================
+# UPDATE NODE 1 SEEDS
+# =========================
+echo "Updating ${NODE1} config with ${NODE2} as a seed..."
+
+gcloud compute ssh "${NODE1}" \
+  --project="${PROJECT_ID}" --zone="${ZONE}" \
+  --command "sudo bash -c '
+cat > /etc/aerospike/aerospike.conf <<CONF
+service { cluster-name ${CLUSTER_NAME}; proto-fd-max 15000 }
+logging { file /var/log/aerospike/aerospike.log { context any info } }
+network {
+    service { address any; port 3000 }
+    fabric { address any; port 3001 }
+    heartbeat {
+        mode mesh
+        address any
+        port 3003
+        interval 150
+        timeout 10
+        mesh-seed-address-port ${NODE2_IP} 3003
+    }
+    admin { address any; port 3004 }
+}
+namespace ${NAMESPACE_NAME} {
+    replication-factor 2
+    default-ttl 0
+    indexes-memory-budget 4G
+    storage-engine device { device ${NVME_DEVICE} }
+}
+CONF
+systemctl restart aerospike
+'"
+
+echo "Done. Cluster nodes:"
+gcloud compute instances describe "${NODE1}" --project="${PROJECT_ID}" --zone="${ZONE}" --format="table(name,networkInterfaces[0].networkIP,status)"
+gcloud compute instances describe "${NODE2}" --project="${PROJECT_ID}" --zone="${ZONE}" --format="table(name,networkInterfaces[0].networkIP,status)"
 ```
-Find the last `RUN` line and change `make -j` to `make-j2` or `make -j4`:
-```dockerfile
-RUN export CC=/usr/bin/gcc-9 && export CXX=/usr/bin/g++-9 && mkdir build && cd build && cmake .. && make -j2 && cd ..
-```
-Press **Ctrl+O** to save, **Ctrl+X** to exit. Then re-run the build command.
 
-This may take 10-15 minutes as it compiles the core C++ library.
-
-## 2. Working with the Shared Filesystem
-We use a "Volume Mount" to link your local repository folder to the /app folder inside the container. This creates a single filesystem: any change you make in your IDE on the DevBox is instantly visible inside the container, and any binary compiled in the container is saved directly to your DevBox.
-
-To start an interactive session, use:
+**3. Run the Script**
 ```bash
-docker run -it --rm -v $(pwd):/app sptag /bin/bash
+chmod +x deploy-aerospike.sh
+./deploy-aerospike.sh
 ```
 
-### Flag Breakdown:
-- -it: Keeps the session interactive so you can type commands.
-- --rm: Automatically deletes the container instance (not the image) when you exit, keeping your system clean.
-- -v $(pwd):/app: Maps your current directory to /app inside the container.
-
-## 3. Development Workflow
-
-### Python Development
-The SPTAG.py and associated .so files are already in the Release folder. You can run Python scripts inside the container environment:
+**4. Verification and Testing**
+SSH into a node:
 ```bash
-# Inside the container shell
-export PYTHONPATH=$PYTHONPATH:/app/Release
-python3 your_script.py
+gcloud compute ssh aerospike-node-1 --zone us-central1-a
 ```
-#### Troubleshooting
-
-If you do not see the `/Release` folder after entering the container, it likely means the project has not been compiled yet.
-
-Follow these steps inside the container:
-
-Step 1: Create the build directory and configure
-```
-export CC=/usr/bin/gcc-8
-export CXX=/usr/bin/g++-8
-mkdir -p build
-cd build
-cmake ..
-```
-
-Step 2: Compile the project
-(`-j$(nproc)` — this may consume too much memory and cause the build to fail.)
-```
-make -j2
-```
-
-After the build completes successfully, the Release folder will be generated automatically, and the compiled binaries (including the Python .so files) will appear there.
-
-### C++ Development and Recompiling
-If you modify the C++ source code in the AnnService or Wrappers directories, you must recompile. Because of the volume mount, you do this inside the container using the container's tools:
+Check status:
 ```bash
-# Inside the container shell
-cd build
-make -j$(nproc)
+systemctl status aerospike --no-pager
+asadm -e "info"  # Should output 2 nodes, cluster formed.
 ```
-The updated binaries will automatically appear in your local Release folder on the DevBox.
 
-## 4. Why this setup?
-1. Persistence: Since the Release folder is on your DevBox disk, your compiled work is not lost when you close Docker.
-2. Tooling: You can use your preferred editors on the DevBox while relying on the container for the complex build stack.
-3. Consistency: Every teammate is using the exact same compiler and library versions defined in the Dockerfile.
+Test Read/Write (AQL):
+```bash
+aql
+# Inside the AQL shell:
+INSERT INTO sptag_data.testset (PK, bin1) VALUES ('key1', 'hello');
+SELECT * FROM sptag_data.testset WHERE PK='key1';
+```
+*(You can verify cross-node communication by running the `SELECT` command from the second Aerospike node.)*
 
-## Troubleshooting
-If you enter the container and do not see the Release folder, ensure you are running the docker run command from the root of the SPTAG repository where the Release folder is located.
+**Troubleshooting**
+The most important log for startup issues is `/var/log/startup-aerospike.log`. 
+If something fails heavily, you can wipe the cluster and start fresh:
+```bash
+gcloud compute instances delete aerospike-node-1 aerospike-node-2 --zone us-central1-a
+gcloud compute firewall-rules delete aerospike-internal
+```
