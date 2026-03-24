@@ -104,7 +104,7 @@ set -euo pipefail
 # USER-EDITABLE SETTINGS
 # =========================
 # Set your GCP project, zone, VM specs, cluster names, and Aerospike package details here before running.
-PROJECT_ID=your-gcp-project-id
+PROJECT_ID="your-gcp-project-id"
 ZONE="us-east4-b"
 MACHINE_TYPE="n2-standard-4"
 IMAGE_FAMILY="ubuntu-2404-lts-amd64"
@@ -123,9 +123,10 @@ if [[ "$PROJECT_ID" == "your-gcp-project-id" ]]; then
   exit 1
 fi
 
+# Set the active gcloud project so all following compute commands run against the correct project.
 gcloud config set project "${PROJECT_ID}"
 
-# Create firewall rule
+# Create a firewall rule that allows Aerospike nodes with the aerospike tag to talk to each other on the needed ports.
 gcloud compute firewall-rules create aerospike-internal \
   --network=default \
   --allow tcp:3000-3004 \
@@ -135,28 +136,40 @@ gcloud compute firewall-rules create aerospike-internal \
 # =========================
 # WRITE VM STARTUP SCRIPT
 # =========================
+# This creates the startup script that each VM will run automatically on first boot to install and configure Aerospike.
 cat > startup-aerospike.sh <<'EOF'
 #!/bin/bash
 set -euxo pipefail
 
+# Send all startup-script output into a log file so installation and config issues can be debugged later.
 exec > /var/log/startup-aerospike.log 2>&1
 export DEBIAN_FRONTEND=noninteractive
 
-CLUSTER_NAME="$(curl -fs -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/cluster-name)"
-NAMESPACE_NAME="$(curl -fs -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/namespace-name)"
-SEED_IPS_RAW="$(curl -fs -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/seed-ips || true)"
-NVME_DEVICE="$(curl -fs -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/nvme-device)"
-AEROSPIKE_URL="$(curl -fs -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/aerospike-url)"
-AEROSPIKE_DIR="$(curl -fs -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/aerospike-dir)"
+# Read cluster settings from the VM metadata so the same startup script can configure both nodes dynamically.
+CLUSTER_NAME="$(curl -fs -H 'Metadata-Flavor: Google' \
+  http://metadata.google.internal/computeMetadata/v1/instance/attributes/cluster-name)"
+NAMESPACE_NAME="$(curl -fs -H 'Metadata-Flavor: Google' \
+  http://metadata.google.internal/computeMetadata/v1/instance/attributes/namespace-name)"
+SEED_IPS_RAW="$(curl -fs -H 'Metadata-Flavor: Google' \
+  http://metadata.google.internal/computeMetadata/v1/instance/attributes/seed-ips || true)"
+NVME_DEVICE="$(curl -fs -H 'Metadata-Flavor: Google' \
+  http://metadata.google.internal/computeMetadata/v1/instance/attributes/nvme-device)"
+AEROSPIKE_URL="$(curl -fs -H 'Metadata-Flavor: Google' \
+  http://metadata.google.internal/computeMetadata/v1/instance/attributes/aerospike-url)"
+AEROSPIKE_DIR="$(curl -fs -H 'Metadata-Flavor: Google' \
+  http://metadata.google.internal/computeMetadata/v1/instance/attributes/aerospike-dir)"
 
+# Install the tools needed to download, unpack, and prepare the Aerospike package.
 apt-get update
 apt-get install -y wget curl python3 tar util-linux
 
+# Wipe the local NVMe SSD if it exists so Aerospike can use a clean device for storage.
 if [ -b "$NVME_DEVICE" ]; then
     echo "Wiping NVMe device $NVME_DEVICE..."
     blkdiscard "$NVME_DEVICE" || true
 fi
 
+# Download and install Aerospike only if it is not already installed on the VM.
 if [ ! -d "/opt/aerospike/bin" ]; then
     mkdir -p /opt/aerospike
     wget "$AEROSPIKE_URL" -O /tmp/aerospike.tgz
@@ -165,15 +178,18 @@ if [ ! -d "/opt/aerospike/bin" ]; then
     ./asinstall
 fi
 
+# Make sure the Aerospike config and log directories exist after installation.
 mkdir -p /etc/aerospike
 mkdir -p /var/log/aerospike
 chown -R aerospike:aerospike /var/log/aerospike || true
 
-if[ -b "$NVME_DEVICE" ]; then
+# Give the Aerospike user access to the NVMe device so the database can use it as its storage engine.
+if [ -b "$NVME_DEVICE" ]; then
     chown aerospike:aerospike "$(readlink -f "$NVME_DEVICE")" || true
     usermod -aG disk aerospike || true
 fi
 
+# Build heartbeat seed lines from the metadata-provided IP list so this node can discover the other cluster member.
 SEED_LINES=""
 if [[ -n "${SEED_IPS_RAW}" ]]; then
   IFS=',' read -ra SEEDS <<< "${SEED_IPS_RAW}"
@@ -182,6 +198,7 @@ if [[ -n "${SEED_IPS_RAW}" ]]; then
   done
 fi
 
+# Write the Aerospike server configuration using the metadata values and generated seed list.
 cat > /etc/aerospike/aerospike.conf <<CONF
 service {
     cluster-name ${CLUSTER_NAME}
@@ -195,8 +212,16 @@ logging {
 }
 
 network {
-    service { address any; port 3000 }
-    fabric { address any; port 3001 }
+    service {
+        address any
+        port 3000
+    }
+
+    fabric {
+        address any
+        port 3001
+    }
+
     heartbeat {
         mode mesh
         address any
@@ -204,7 +229,11 @@ network {
         interval 150
         timeout 10
 ${SEED_LINES}    }
-    admin { address any; port 3004 }
+
+    admin {
+        address any
+        port 3004
+    }
 }
 
 namespace ${NAMESPACE_NAME} {
@@ -218,68 +247,122 @@ namespace ${NAMESPACE_NAME} {
 }
 CONF
 
+# Reload systemd, enable Aerospike at boot, and start the database service now.
 systemctl daemon-reload
 systemctl enable aerospike
 systemctl start aerospike
 EOF
 
+# Make the generated startup script executable so GCP can run it during VM boot.
 chmod +x startup-aerospike.sh
 
 # =========================
 # CREATE NODE 1
 # =========================
+# Create the first Aerospike VM. It starts with no seed IPs because it is the initial cluster member.
 echo "Creating ${NODE1}..."
 gcloud compute instances create "${NODE1}" \
-  --project="${PROJECT_ID}" --zone="${ZONE}" \
+  --project="${PROJECT_ID}" \
+  --zone="${ZONE}" \
   --machine-type="${MACHINE_TYPE}" \
-  --image-family="${IMAGE_FAMILY}" --image-project="${IMAGE_PROJECT}" \
-  --boot-disk-size=30GB --boot-disk-type=pd-balanced \
+  --image-family="${IMAGE_FAMILY}" \
+  --image-project="${IMAGE_PROJECT}" \
+  --boot-disk-size=30GB \
+  --boot-disk-type=pd-balanced \
   --local-ssd=interface=nvme \
   --tags=aerospike \
   --metadata=cluster-name="${CLUSTER_NAME}",namespace-name="${NAMESPACE_NAME}",seed-ips="",nvme-device="${NVME_DEVICE}",aerospike-url="${AEROSPIKE_URL}",aerospike-dir="${AEROSPIKE_DIR}" \
   --metadata-from-file=startup-script=./startup-aerospike.sh
 
+# Wait briefly so node 1 has time to boot and get assigned its internal IP address.
 echo "Waiting for ${NODE1} IP..."
 sleep 40
-NODE1_IP=$(gcloud compute instances describe "${NODE1}" --project="${PROJECT_ID}" --zone="${ZONE}" --format="get(networkInterfaces[0].networkIP)")
+
+# Read node 1’s internal IP so it can be passed as the seed IP when creating node 2.
+NODE1_IP=$(gcloud compute instances describe "${NODE1}" \
+  --project="${PROJECT_ID}" \
+  --zone="${ZONE}" \
+  --format="get(networkInterfaces[0].networkIP)")
+
+# Print node 1’s internal IP for visibility and later troubleshooting.
 echo "${NODE1} internal IP: ${NODE1_IP}"
+
+# Show the tail of the startup log from node 1 so installation problems can be caught early.
+echo "Checking ${NODE1} startup log..."
+gcloud compute ssh "${NODE1}" \
+  --project="${PROJECT_ID}" \
+  --zone="${ZONE}" \
+  --command "sudo tail -50 /var/log/startup-aerospike.log"
 
 # =========================
 # CREATE NODE 2
 # =========================
+# Create the second Aerospike VM and give it node 1’s internal IP as its heartbeat seed.
 echo "Creating ${NODE2}..."
 gcloud compute instances create "${NODE2}" \
-  --project="${PROJECT_ID}" --zone="${ZONE}" \
+  --project="${PROJECT_ID}" \
+  --zone="${ZONE}" \
   --machine-type="${MACHINE_TYPE}" \
-  --image-family="${IMAGE_FAMILY}" --image-project="${IMAGE_PROJECT}" \
-  --boot-disk-size=30GB --boot-disk-type=pd-balanced \
+  --image-family="${IMAGE_FAMILY}" \
+  --image-project="${IMAGE_PROJECT}" \
+  --boot-disk-size=30GB \
+  --boot-disk-type=pd-balanced \
   --local-ssd=interface=nvme \
   --tags=aerospike \
   --metadata=cluster-name="${CLUSTER_NAME}",namespace-name="${NAMESPACE_NAME}",seed-ips="${NODE1_IP}",nvme-device="${NVME_DEVICE}",aerospike-url="${AEROSPIKE_URL}",aerospike-dir="${AEROSPIKE_DIR}" \
   --metadata-from-file=startup-script=./startup-aerospike.sh
 
+# Wait briefly so node 2 can boot and receive its internal IP.
 echo "Waiting for ${NODE2} IP..."
 sleep 40
-NODE2_IP=$(gcloud compute instances describe "${NODE2}" --project="${PROJECT_ID}" --zone="${ZONE}" --format="get(networkInterfaces[0].networkIP)")
+
+# Read node 2’s internal IP so node 1 can later be updated to know about it too.
+NODE2_IP=$(gcloud compute instances describe "${NODE2}" \
+  --project="${PROJECT_ID}" \
+  --zone="${ZONE}" \
+  --format="get(networkInterfaces[0].networkIP)")
+
+# Print node 2’s internal IP for confirmation and debugging.
 echo "${NODE2} internal IP: ${NODE2_IP}"
 
+# Give node 1 additional time to finish its install before rewriting and restarting its Aerospike config.
 echo "Waiting for Aerospike to finish installing on ${NODE1}..."
 sleep 60
 
 # =========================
 # UPDATE NODE 1 SEEDS
 # =========================
+# Rewrite node 1’s Aerospike config so it also includes node 2 as a mesh heartbeat seed, then restart Aerospike.
 echo "Updating ${NODE1} config with ${NODE2} as a seed..."
 
 gcloud compute ssh "${NODE1}" \
-  --project="${PROJECT_ID}" --zone="${ZONE}" \
+  --project="${PROJECT_ID}" \
+  --zone="${ZONE}" \
   --command "sudo bash -c '
+mkdir -p /etc/aerospike
 cat > /etc/aerospike/aerospike.conf <<CONF
-service { cluster-name ${CLUSTER_NAME}; proto-fd-max 15000 }
-logging { file /var/log/aerospike/aerospike.log { context any info } }
+service {
+    cluster-name ${CLUSTER_NAME}
+    proto-fd-max 15000
+}
+
+logging {
+    file /var/log/aerospike/aerospike.log {
+        context any info
+    }
+}
+
 network {
-    service { address any; port 3000 }
-    fabric { address any; port 3001 }
+    service {
+        address any
+        port 3000
+    }
+
+    fabric {
+        address any
+        port 3001
+    }
+
     heartbeat {
         mode mesh
         address any
@@ -288,21 +371,40 @@ network {
         timeout 10
         mesh-seed-address-port ${NODE2_IP} 3003
     }
-    admin { address any; port 3004 }
+
+    admin {
+        address any
+        port 3004
+    }
 }
+
 namespace ${NAMESPACE_NAME} {
     replication-factor 2
     default-ttl 0
     indexes-memory-budget 4G
-    storage-engine device { device ${NVME_DEVICE} }
+
+    storage-engine device {
+        device ${NVME_DEVICE}
+    }
 }
 CONF
 systemctl restart aerospike
 '"
 
-echo "Done. Cluster nodes:"
+# Print a blank line and a final status message once both nodes are created and the seed update is complete.
+echo
+echo "Done."
+
+# Show the final VM names, internal IPs, and status values so you can confirm both nodes exist and are running.
+echo "Cluster nodes:"
 gcloud compute instances describe "${NODE1}" --project="${PROJECT_ID}" --zone="${ZONE}" --format="table(name,networkInterfaces[0].networkIP,status)"
 gcloud compute instances describe "${NODE2}" --project="${PROJECT_ID}" --zone="${ZONE}" --format="table(name,networkInterfaces[0].networkIP,status)"
+
+# Print a ready-to-run verification command to check Aerospike cluster info from node 1.
+echo
+echo "Verify with:"
+echo "gcloud compute ssh ${NODE1} --zone ${ZONE} --project ${PROJECT_ID} --command 'asadm -e \"info\"'"
+
 ```
 
 **3. Run the Script**
@@ -351,7 +453,7 @@ gcloud compute instances create sptag-node \
     --machine-type=c2-standard-8 \
     --subnet=default \
     --tags=http-server,https-server \
-    --create-disk=auto-delete=yes,boot=yes,device-name=slow-disk,name=slow-disk,size=250GB,type=pd-standard,image-family=ubuntu-2404-lts-amd64,image-project=ubuntu-os-cloud \
+    --create-disk=auto-delete=yes,boot=yes,size=250GB,type=pd-standard,image-family=ubuntu-2404-lts-amd64,image-project=ubuntu-os-cloud \
     --local-ssd=interface=NVME \
     --scopes=default \
     --labels=goog-ops-agent=v2-x86-template
