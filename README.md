@@ -3,61 +3,64 @@
 Welcome to the project repository focused on building and integrating a distributed Key-Value (KV) database for SPTAG. 
 
 ## Index
-1. [The Problem Statement](#1-the-problem-statement)
+
+1. [Problem Statement](#1-problem-statement)
 2. [Current Progress](#2-current-progress)
 3. [Setup Guidance](#3-setup-guidance)
+   - [Build 2 Aerospike Nodes](#aerospike-2-node-cluster-on-gcp)
+   - [Build 1 SPTAG Node](#setting-up-a-single-sptag-node)
+   - [Run the SPTAG Benchmark on top of Aerospike noddes](#run-the-sptag-benchmark)
 
 ---
 
-## 1) Summary
-SPTAG:
-	This is an advanced ANN algorithm that find the nearest neighbor of a vector in high-dimensional space(potentially  thousands of dimension)
-	
-	It avoid the dimensionality curse in conventional ANN algorithm by not splitting on all dimensions like what quad-tree/oct-tree does. It use some clustered tree, so the branch doesn't split the space exponentially.(ie the branching factor is way smaller)
-	
-	Once we go to the approximate region via the tree, SPTAG provide Relative Neighborhood Graph for that region(the vectors in that region are connected)  Then we just do greedy search in the graph to find the approximated closet vector.
-	
-Role of aerospike.
-	SPTAG can return the nearest vector index given an input vector index, but someone need to retrieve content corresponding to the index.
-	
-	A simple dict in python won't work since there are too much data which will use up the RAM, and it's not persistent(it will be lost when power is off)
-	
-	And there are so much data that one computer cannot store all of them. Multiple computers are needed, meaning simple dict won't work.
-	
-	If there are many users trying to access the simple dict at the same time, there will be terrible lock conflict.
-	
+## 1) Problem Statement
+
+SPTAG:  
+	This is an advanced ANN algorithm that find the nearest neighbor of a vector in high-dimensional space(potentially  thousands of dimension)  
+	  
+	It avoid the dimensionality curse in conventional ANN algorithm by not splitting on all dimensions like what quad-tree/oct-tree does. It use some clustered tree, so the branch doesn't split the space exponentially.(ie the branching factor is way smaller)  
+	  
+	Once we go to the approximate region via the tree, SPTAG provide Relative Neighborhood Graph for that region(the vectors in that region are connected)  Then we just do greedy search in the graph to find the approximated closet vector.  
+	  
+Role of aerospike.  
+	SPTAG can return the nearest vector index given an input vector index, but someone need to retrieve content corresponding to the index.  
+	  
+	A simple dict in python won't work since there are too much data which will use up the RAM, and it's not persistent(it will be lost when power is off)  
+	  
+	And there are so much data that one computer cannot store all of them. Multiple computers are needed, meaning simple dict won't work.  
+	  
+	If there are many users trying to access the simple dict at the same time, there will be terrible lock conflict.  
+	  
 	Aerospike solve these problems by storing data in SSD on multiple machines. It provides a distributed system that can handle lots of users. 
 
-	
-	
-TIKV vs Aerospike 
-	Read-heavy
-	
-	TIKV is more write friendly but not read friendly
-	
-	For TIKV, if it want to read content for a computed neightbor vector index from SPTAG, if content is not in RAM'S block cache, it needs to search through multiple level of disk files, causing latency spike.
-	While Aerospike skip the OS, directly read the SSD.
-	Hence aerospike read latency is always <1ms while TIKV can be UP to 10 ms.
-	
-	On consistency, compared to TIKV,  Aerospike sacrificed a bit on consistency, with big gain on performance.
-	
-	
-	On locating things:
-		TIKV use LSM tree(this is a main stream approach).
-			It have multiple intermediate steps between hash index and disk.
-				Causing write and read amplification
-		Aerospike:
-			It directly store the disk offset for each hash index. No intermediate steps, very fast.
+TIKV vs Aerospike   
+	Read-heavy  
+	  
+	TIKV is more write friendly but not read friendly  
+	  
+	For TIKV, if it want to read content for a computed neightbor vector index from SPTAG, if content is not in RAM'S block cache, it needs to search through multiple level of disk files, causing latency spike.  
+	While Aerospike skip the OS, directly read the SSD.  
+	Hence aerospike read latency is always <1ms while TIKV can be UP to 10 ms.  
+	  
+	On consistency, compared to TIKV,  Aerospike sacrificed a bit on consistency, with big gain on performance.  
+	  
+	  
+	On locating things:  
+		TIKV use LSM tree(this is a main stream approach).  
+			It have multiple intermediate steps between hash index and disk.  
+				Causing write and read amplification  
+		Aerospike:  
+			It directly store the disk offset for each hash index. No intermediate steps, very fast.  
 Read and write amplification remain 1X
 
 ---
 
 ## 2) Current Progress
 
-* **Initial Approach:** We initially worked on integrating TiKV as our distributed storage backend. 
-* **Pivot:** Our mentor shifted their interest from integrating TiKV to having us either build our own solution from scratch or heavily modify an existing solution.
-* **Current Architecture (Aerospike):** We pivoted to using **Aerospike**. We chose Aerospike primarily because it does not rely on Log-Structured Merge (LSM) trees and has the unique ability to write directly to NVMe drives using SPDK, completely bypassing OS buffers for massive I/O performance gains.
-* **Status:** We have successfully run SPTAG on Aerospike! This was achieved by directly modifying the SPTAG source code to include an Aerospike client integration. The current implementation is heavily "vibecoded" (a rapid, experimental proof-of-concept), so our immediate next focus is to refactor the code, ensure the architecture makes logical sense, and optimize for stability.
+- **Initial Approach:** We initially worked on integrating TiKV as our distributed storage backend. 
+- **Pivot:** Our mentor shifted their interest from integrating TiKV to having us either build our own solution from scratch or heavily modify an existing solution.
+- **Current Architecture (Aerospike):** We pivoted to using **Aerospike**. We chose Aerospike primarily because it does not rely on Log-Structured Merge (LSM) trees and has the unique ability to write directly to NVMe drives using SPDK, completely bypassing OS buffers for massive I/O performance gains.
+- **Status:** We have successfully run SPTAG on Aerospike! This was achieved by directly modifying the SPTAG source code to include an Aerospike client integration. The current implementation is heavily "vibecoded" (a rapid, experimental proof-of-concept), so our immediate next focus is to refactor the code, ensure the architecture makes logical sense, and optimize for stability.
 
 ---
 
@@ -65,36 +68,57 @@ Read and write amplification remain 1X
 
 ### Aerospike 2-Node Cluster on GCP
 
-This guide walks through how to recreate a 2-node Aerospike cluster on Google Cloud using a deployment script.
+This guide walks through how to recreate a 2-node Aerospike cluster on Google Cloud using a deployment script.  
 This setup will:
-* Create 2 Google Compute Engine VMs
-* Install Aerospike automatically on both
-* Configure them as a 2-node cluster
-* Use local NVMe SSD storage
-* Open the required internal firewall ports for Aerospike traffic
+
+- Create 2 Google Compute Engine VMs
+- Install Aerospike automatically on both
+- Configure them as a 2-node cluster
+- Use local NVMe SSD storage
+- Open the required internal firewall ports for Aerospike traffic
 
 #### Prerequisites
+
 Before starting, ensure:
-* You have access to a Google Cloud project with billing enabled.
-* Compute Engine API is enabled (`gcloud services enable compute.googleapis.com`).
-* You are using **Google Cloud Shell** or have `gcloud` installed locally.
+
+- You have access to a Google Cloud project with billing enabled.
+- Compute Engine API is enabled You can run the following command in the Google Cloud Shell: (`gcloud services enable compute.googleapis.com`).
+- You are using **Google Cloud Shell** or have `gcloud` installed locally.
 
 #### Deployment Steps
 
 **1. Find and Set Your Project**
+
+You can find your GCP project ID in the Google Cloud Console as shown in the screenshot below:
+
+![GCP Project ID Screenshot](docs/GCP project-id.png)
+
+Alternatively, you can list all your projects using (though this might output all of the BU projects for you):
+
+**Run in Google Cloud Shell:**
+
 ```bash
 gcloud projects list
 ```
-Note your Project_ID, you will need it in the next step. 
+
+> [!NOTE]
+> Note your Project_ID, you will need it for the next step.
 
 then run:
-```bash 
+
+```bash
 gcloud config set project YOUR_PROJECT_ID
 gcloud config get-value project
 ```
 
-**2. Create the Deployment Script**
-Create a file named `deploy-aerospike.sh` and paste the following bash script into it. Make sure to edit the `PROJECT_ID` and `ZONE` at the top of the file to match your environment.
+**2. Create the Deployment Script**  
+Create a file named `deploy-aerospike.sh` and paste the following bash script into it. 
+
+> [!IMPORTANT]
+> Make sure to edit the `PROJECT_ID` and `ZONE` at the top of the file to match your environment.
+> The below scripts are to be ran on Google Cloud Shell (see the screenshot below)
+
+![GCP Shell](docs/Google-shell.png)
 
 ```bash
 #!/bin/bash
@@ -408,44 +432,70 @@ echo "gcloud compute ssh ${NODE1} --zone ${ZONE} --project ${PROJECT_ID} --comma
 ```
 
 **3. Run the Script**
+
 ```bash
 chmod +x deploy-aerospike.sh
 ./deploy-aerospike.sh
 ```
 
-**4. Verification and Testing**
+**4. Verification and Testing**  
 SSH into a node:
+
 ```bash
 gcloud compute ssh aerospike-node-1 --zone us-east4-b
 ```
+
+> [!IMPORTANT]
+> Now you should be SSHed into a node! So the following commands should be ran from the nodes themselves.
+
+**Run on an Aerospike node after SSHing in:**
+
 Check status:
+
 ```bash
 systemctl status aerospike --no-pager
-asadm -e "info"  # Should output 2 nodes, cluster formed.
+asadm -e "info"  # Should output 2 nodes, cluster formed!
 ```
 
+You should see something like this:
+![as-adm output](docs/aerospike-asadm-output.png)
+
 Test Read/Write (AQL):
+
 ```bash
 aql
 # Inside the AQL shell:
 INSERT INTO sptag_data.testset (PK, bin1) VALUES ('key1', 'hello');
 SELECT * FROM sptag_data.testset WHERE PK='key1';
 ```
-*(You can verify cross-node communication by running the `SELECT` command from the second Aerospike node.)*
 
-**Troubleshooting**
-The most important log for startup issues is `/var/log/startup-aerospike.log`. 
+*(You can verify cross-node communication by running the* `SELECT` *command from the second Aerospike node.)*
+![aql output](docs/aql-output.png)
+
+**Troubleshooting**  
+The most important log for startup issues is `/var/log/startup-aerospike.log`.   
 If something fails heavily, you can wipe the cluster and start fresh:
+
 ```bash
 gcloud compute instances delete aerospike-node-1 aerospike-node-2 --zone us-east4-b
 gcloud compute firewall-rules delete aerospike-internal
 ```
 
+---
+
 ### Setting Up a Single SPTAG Node
 
 To provision a single high-performance VM and run the environment via Docker, execute the following:
 
-In the Google Cloud Shell (press G and S in the google cloud VM-instance window)
+#### Provision the GCP Instance
+
+> [!IMPORTANT]
+> The following command should be ran in the Google Shell, not the aerospike node shell.
+
+In the Google Cloud Shell (press G and S in the google cloud VM-instance window):
+
+**Run in Google Cloud Shell:**
+
 ```bash
 # 1. Provision the GCP Instance
 gcloud compute instances create sptag-node \
@@ -459,7 +509,16 @@ gcloud compute instances create sptag-node \
     --labels=goog-ops-agent=v2-x86-template
 ```
 
-Then SSH into the provisioned VM, and run the following **(when you get to the Docker Build Phase, do not worry about the red text – those are warnings that came along with the SPTAG codebase. We also have unused methods which cause warnings, but they do not affect the ability of the code to run)**:
+---
+
+#### Prepare the SPTAG VM and Docker Environment
+
+Then SSH into the provisioned VM, and run the following:
+
+> [!NOTE]
+> When you get to the Docker Build Phase, do not worry about the red text - those are warnings that came along with the SPTAG codebase. We also have unused methods which cause warnings, but they do not affect the ability of the code to run.
+
+**Run on the provisioned SPTAG VM after SSHing in:**
 
 ```bash
 # 1. Install all of the required tools (git, Docker, etc.):
@@ -498,12 +557,29 @@ You should see something along the lines of:
 root@[bunch of numbers and letters]:/app# 
 ```
 
-From here, you will have to navigate to the GCP VM-instances,  **IMPORTANT: and note the internal IP address of one of your aerospike nodes from the VM instances window on the Google Cloud Platform. You have to input the internal IP address of any of your 2 aerospike nodes:**
-You can refer to the following screenshot for guidance on how to find the internal IP address of your Aerospike node on GCP:
+---
 
-![Finding Aerospike Internal IP](docs/GCP%20VM%20instances%20-%3E%20finding%20internal%20IP%20aerospike.png)
+#### Find the Aerospike Internal IP
+
+From here, you will have to navigate to the GCP VM-instances,  
+
+> [!IMPORTANT]
+> Note the internal IP address of one of your aerospike nodes from the VM instances window on the Google Cloud Platform. You have to input the internal IP address of any of your 2 aerospike nodes.
+
+Finding Aerospike Internal IP
 
 The highlighted area in the image shows where to look for the "Internal IP" column in your list of VM instances. Copy that internal IP address and use it in the build step below by replacing `[Aerospike internal ip address]` with the value you found (for example, `10.150.0.28`):
+
+![aerospike internal IP](docs/GCP VM instances -> finding internal IP aerospike.png)
+
+---
+
+#### Rebuild SPTAG with Aerospike Enabled
+
+> [!IMPORTANT]
+> NOTE the `DAEROSPIKE_DEFAULT_HOST`, you should populate that with your own internal IP address.
+
+**Run inside the SPTAG Docker shell:**
 
 ```bash
 cd /app
@@ -511,11 +587,14 @@ rm -rf build/build-aero
  cmake -S . -B build/build-aero -DAEROSPIKE=ON \
    -DAEROSPIKE_INCLUDE_DIR=/usr/include \
    -DAEROSPIKE_CLIENT_LIBRARY=/lib/libaerospike.so \
-   -DAEROSPIKE_DEFAULT_HOST=[Aerospike internal ip address]
+   -DAEROSPIKE_DEFAULT_HOST=[IMPOOOOORTAAANT!!!!!! put your Aerospike internal ip address]
+
  cmake --build build/build-aero -j8
 ```
 
-***Example:***
+> [!TIP]
+> Example of how it looks for us:
+
 ```bash
 cd /app
 rm -rf build/build-aero
@@ -523,13 +602,22 @@ cmake -S . -B build/build-aero -DAEROSPIKE=ON \
   -DAEROSPIKE_INCLUDE_DIR=/usr/include \
   -DAEROSPIKE_CLIENT_LIBRARY=/lib/libaerospike.so \
   -DAEROSPIKE_DEFAULT_HOST=10.150.0.28
+
 cmake --build build/build-aero -j8
 ```
 
 This should show you cmake outputs – it will throw some warnings, but some of them come directly from the SPTAG codebase, and we only added 2 more warnings to it (unused authentication methods that will be refined later down the line)
 
-after your project has been built, run the following commands (pay attention to the variables that you have to provide):
- **IMPORTANT: and note the internal IP address of one of your aerospike nodes from the VM instances window on the Google Cloud Platform. You have to input the internal IP address of any of your 2 aerospike nodes:**
+---
+
+#### Run the SPTAG Benchmark
+
+after your project has been built, run the following commands (pay attention to the variables that you have to provide):  
+
+> [!IMPORTANT]
+> NOTE the `SPTAG_AEROSPIKE_HOST`, you should populate that with your own internal IP address.
+
+**Run inside the SPTAG Docker shell:**
 
 ```bash
 cd /app
@@ -537,9 +625,10 @@ rm -f perftest_vector.bin perftest_meta.bin perftest_metaidx.bin \
       perftest_addvector.bin perftest_addmeta.bin perftest_addmetaidx.bin \
       perftest_query.bin perftest_batchtruth.*
 rm -rf proidx/spann_index_aero proidx/spann_index_aero_*
+
+export SPTAG_AEROSPIKE_HOST=your_ip_address
 export BENCHMARK_CONFIG=/app/benchmark.aerospike.ini
 export BENCHMARK_OUTPUT=/app/results/benchmark_aerospike.json
-export SPTAG_AEROSPIKE_HOST=IMPORTANT, FILL IN YOUR AEROSPIKE INTERNAL IP ADDRESS HERE 
 export SPTAG_AEROSPIKE_PORT=3000
 export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
 export SPTAG_AEROSPIKE_SET=sptag
@@ -550,11 +639,13 @@ mkdir -p /app/results /app/proidx/spann_index_aero
 ./Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=test_suite
 ```
 
-**example of how to fill in the above:**
+> [!TIP]
+> Example of how to fill in the above:
+
 ```bash
 root@ce80966fc3d0:/app# rm -f perftest_vector.bin perftest_meta.bin perftest_metaidx.bin \
->       perftest_addvector.bin perftest_addmeta.bin perftest_addmetaidx.bin \
->       perftest_query.bin perftest_batchtruth.*
+       perftest_addvector.bin perftest_addmeta.bin perftest_addmetaidx.bin \
+       perftest_query.bin perftest_batchtruth.*
 root@ce80966fc3d0:/app# rm -rf proidx/spann_index_aero proidx/spann_index_aero_*
 root@ce80966fc3d0:/app# export BENCHMARK_CONFIG=/app/benchmark.aerospike.ini
 root@ce80966fc3d0:/app# export BENCHMARK_OUTPUT=/app/results/benchmark_aerospike.json
@@ -563,8 +654,22 @@ root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_PORT=3000
 root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
 root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_SET=sptag
 root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_BIN=value
-
-
-
 root@ce80966fc3d0:/app# ./Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=test_suite
 ```
+
+This is what you should see:
+![SPTAG running on top of Aerospike nodes](docs/SPTAG-benchmark-running.png)
+
+
+---
+
+#### Benchmark Results
+
+Results:
+
+to see your benchmark results, you can:
+```bash
+cat /app/results/benchmark_aerospike.json
+```
+Example: 
+![our Benchmark results](docs/benchmark-results.png)
