@@ -91,7 +91,7 @@ Before starting, ensure:
 
 You can find your GCP project ID in the Google Cloud Console as shown in the screenshot below:
 
-![GCP Project ID Screenshot](docs/GCP project-id.png)
+![GCP Project ID Screenshot](docs/GCP%20project-id.png)
 
 Alternatively, you can list all your projects using (though this might output all of the BU projects for you):
 
@@ -570,7 +570,7 @@ Finding Aerospike Internal IP
 
 The highlighted area in the image shows where to look for the "Internal IP" column in your list of VM instances. Copy that internal IP address and use it in the build step below by replacing `[Aerospike internal ip address]` with the value you found (for example, `10.150.0.28`):
 
-![aerospike internal IP](docs/GCP VM instances -> finding internal IP aerospike.png)
+![aerospike internal IP](docs/GCP%20VM%20instances%20-%3E%20finding%20internal%20IP%20aerospike.png)
 
 ---
 
