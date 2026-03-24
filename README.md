@@ -459,7 +459,7 @@ gcloud compute instances create sptag-node \
     --labels=goog-ops-agent=v2-x86-template
 ```
 
-Then SSH into the provisioned VM, and run the following:
+Then SSH into the provisioned VM, and run the following **(when you get to the Docker Build Phase, do not worry about the red text – those are warnings that came along with the SPTAG codebase. We also have unused methods which cause warnings, but they do not affect the ability of the code to run)**:
 
 ```bash
 # 1. Install all of the required tools (git, Docker, etc.):
@@ -484,7 +484,7 @@ sudo systemctl start docker
 # 2. Clone the Repository (with submodules)
 # You will need to authenticate with GitHub!!!!! We will that as an excercise to the reader :) 
 # (Just add an ssh key :^) )
-git clone --recursive git@github.com:BU-EC528-Spring-2026/RAG_StormX.git
+git clone --recursive https://github.com/BU-EC528-Spring-2026/RAG_StormX.git
 cd RAG_StormX/SPTAG
 
 # 3. Build and Run the Docker Image
@@ -498,7 +498,12 @@ You should see something along the lines of:
 root@[bunch of numbers and letters]:/app# 
 ```
 
-From here, you will have to navigate to the GCP VM-instances, and note the internal IP address of one of your aerospike nodes. Use it to run the following:
+From here, you will have to navigate to the GCP VM-instances,  **IMPORTANT: and note the internal IP address of one of your aerospike nodes from the VM instances window on the Google Cloud Platform. You have to input the internal IP address of any of your 2 aerospike nodes:**
+You can refer to the following screenshot for guidance on how to find the internal IP address of your Aerospike node on GCP:
+
+![Finding Aerospike Internal IP](docs/GCP%20VM%20instances%20-%3E%20finding%20internal%20IP%20aerospike.png)
+
+The highlighted area in the image shows where to look for the "Internal IP" column in your list of VM instances. Copy that internal IP address and use it in the build step below by replacing `[Aerospike internal ip address]` with the value you found (for example, `10.150.0.28`):
 
 ```bash
 cd /app
@@ -510,9 +515,21 @@ rm -rf build/build-aero
  cmake --build build/build-aero -j8
 ```
 
+***Example:***
+```bash
+cd /app
+rm -rf build/build-aero
+cmake -S . -B build/build-aero -DAEROSPIKE=ON \
+  -DAEROSPIKE_INCLUDE_DIR=/usr/include \
+  -DAEROSPIKE_CLIENT_LIBRARY=/lib/libaerospike.so \
+  -DAEROSPIKE_DEFAULT_HOST=10.150.0.28
+cmake --build build/build-aero -j8
+```
+
 This should show you cmake outputs – it will throw some warnings, but some of them come directly from the SPTAG codebase, and we only added 2 more warnings to it (unused authentication methods that will be refined later down the line)
 
 after your project has been built, run the following commands (pay attention to the variables that you have to provide):
+ **IMPORTANT: and note the internal IP address of one of your aerospike nodes from the VM instances window on the Google Cloud Platform. You have to input the internal IP address of any of your 2 aerospike nodes:**
 
 ```bash
 cd /app
@@ -522,10 +539,32 @@ rm -f perftest_vector.bin perftest_meta.bin perftest_metaidx.bin \
 rm -rf proidx/spann_index_aero proidx/spann_index_aero_*
 export BENCHMARK_CONFIG=/app/benchmark.aerospike.ini
 export BENCHMARK_OUTPUT=/app/results/benchmark_aerospike.json
-export SPTAG_AEROSPIKE_HOST=[]
+export SPTAG_AEROSPIKE_HOST=IMPORTANT, FILL IN YOUR AEROSPIKE INTERNAL IP ADDRESS HERE 
 export SPTAG_AEROSPIKE_PORT=3000
 export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
 export SPTAG_AEROSPIKE_SET=sptag
 export SPTAG_AEROSPIKE_BIN=value
+
+mkdir -p /app/results /app/proidx/spann_index_aero
+
 ./Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=test_suite
+```
+
+**example of how to fill in the above:**
+```bash
+root@ce80966fc3d0:/app# rm -f perftest_vector.bin perftest_meta.bin perftest_metaidx.bin \
+>       perftest_addvector.bin perftest_addmeta.bin perftest_addmetaidx.bin \
+>       perftest_query.bin perftest_batchtruth.*
+root@ce80966fc3d0:/app# rm -rf proidx/spann_index_aero proidx/spann_index_aero_*
+root@ce80966fc3d0:/app# export BENCHMARK_CONFIG=/app/benchmark.aerospike.ini
+root@ce80966fc3d0:/app# export BENCHMARK_OUTPUT=/app/results/benchmark_aerospike.json
+root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_HOST=10.150.0.28
+root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_PORT=3000
+root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
+root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_SET=sptag
+root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_BIN=value
+
+
+
+root@ce80966fc3d0:/app# ./Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=test_suite
 ```
