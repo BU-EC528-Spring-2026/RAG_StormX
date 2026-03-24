@@ -9,13 +9,46 @@ Welcome to the project repository focused on building and integrating a distribu
 
 ---
 
-## 1) The Problem Statement
+## 1) Summary
+SPTAG:
+	This is an advanced ANN algorithm that find the nearest neighbor of a vector in high-dimensional space(potentially  thousands of dimension)
+	
+	It avoid the dimensionality curse in conventional ANN algorithm by not splitting on all dimensions like what quad-tree/oct-tree does. It use some clustered tree, so the branch doesn't split the space exponentially.(ie the branching factor is way smaller)
+	
+	Once we go to the approximate region via the tree, SPTAG provide Relative Neighborhood Graph for that region(the vectors in that region are connected)  Then we just do greedy search in the graph to find the approximated closet vector.
+	
+Role of aerospike.
+	SPTAG can return the nearest vector index given an input vector index, but someone need to retrieve content corresponding to the index.
+	
+	A simple dict in python won't work since there are too much data which will use up the RAM, and it's not persistent(it will be lost when power is off)
+	
+	And there are so much data that one computer cannot store all of them. Multiple computers are needed, meaning simple dict won't work.
+	
+	If there are many users trying to access the simple dict at the same time, there will be terrible lock conflict.
+	
+	Aerospike solve these problems by storing data in SSD on multiple machines. It provides a distributed system that can handle lots of users. 
 
-**About SPTAG**
-SPTAG (Space Partition Tree And Graph) is an open-source library released by Microsoft Research and Bing for fast, large-scale vector approximate nearest neighbor (ANN) search. It assumes samples are represented as vectors compared by L2 or cosine distances. By combining space partition trees (like KD-trees or balanced k-means trees) with relative neighborhood graphs (RNG), SPTAG achieves highly efficient and accurate searches. Recent highlights of the library include incremental in-place updates (online vector deletion and insertion) and distributed serving across multiple machines.
-
-**Why a Distributed KV Database Makes Sense**
-To support the massive scale of billion-vector searches and distributed serving environments, relying purely on in-memory or single-node storage architectures is a bottleneck. A distributed KV database allows SPTAG to persist, partition, and serve massive vector datasets concurrently across multiple machines. By shifting to a distributed KV model—especially one optimized for modern hardware like NVMe—we can ensure high availability, horizontal scalability, and extremely low-latency lookups, which are critical for real-time approximate nearest neighbor retrieval.
+	
+	
+TIKV vs Aerospike 
+	Read-heavy
+	
+	TIKV is more write friendly but not read friendly
+	
+	For TIKV, if it want to read content for a computed neightbor vector index from SPTAG, if content is not in RAM'S block cache, it needs to search through multiple level of disk files, causing latency spike.
+	While Aerospike skip the OS, directly read the SSD.
+	Hence aerospike read latency is always <1ms while TIKV can be UP to 10 ms.
+	
+	On consistency, compared to TIKV,  Aerospike sacrificed a bit on consistency, with big gain on performance.
+	
+	
+	On locating things:
+		TIKV use LSM tree(this is a main stream approach).
+			It have multiple intermediate steps between hash index and disk.
+				Causing write and read amplification
+		Aerospike:
+			It directly store the disk offset for each hash index. No intermediate steps, very fast.
+Read and write amplification remain 1X
 
 ---
 
