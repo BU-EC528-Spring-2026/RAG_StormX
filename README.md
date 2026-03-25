@@ -1,6 +1,6 @@
 # Distributed KV Database for SPTAG
 
-Welcome to the project repository focused on building and integrating a distributed Key-Value (KV) database for SPTAG. 
+Welcome to the project repository focused on building and integrating a distributed Key-Value (KV) database for SPTAG. (Here is our first [video demo](https://drive.google.com/file/d/1i-0wsOg0iPfVE9vz2vDpDfisrusYUJAf/view?usp=drive_link).)
 
 ## Index
 
