@@ -19,8 +19,13 @@ RUN apt-get update && apt-get -y install \
 # 2b. Install newer RocksDB (Ubuntu 20.04 package is too old)
 RUN apt-get update && apt-get -y install ca-certificates build-essential && \
     git clone --depth 1 --branch v8.11.3 https://github.com/facebook/rocksdb.git /tmp/rocksdb && \
-    cmake -S /tmp/rocksdb -B /tmp/rocksdb/build -DCMAKE_BUILD_TYPE=Release \
-        -DWITH_GFLAGS=OFF -DWITH_TESTS=OFF -DWITH_TOOLS=OFF -DWITH_BENCHMARK_TOOLS=OFF && \
+    cmake -S /tmp/rocksdb -B /tmp/rocksdb/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DWITH_GFLAGS=OFF -DWITH_TESTS=OFF -DWITH_TOOLS=OFF -DWITH_BENCHMARK_TOOLS=OFF \
+        -DWITH_TBB=OFF \
+        -DWITH_SNAPPY=OFF -DWITH_LZ4=OFF -DWITH_ZLIB=OFF -DWITH_ZSTD=OFF \
+        -DWITH_JEMALLOC=OFF -DWITH_BZ2=OFF -DWITH_NUMA=OFF \
+        -DROCKSDB_BUILD_SHARED=OFF -DWITH_CORE_TOOLS=OFF -DWITH_RUNTIME_DEBUG=OFF \
+        -DUSE_RTTI=1 && \
     cmake --build /tmp/rocksdb/build -j"$(nproc)" && \
     cmake --install /tmp/rocksdb/build && \
     rm -rf /tmp/rocksdb
@@ -59,3 +64,7 @@ RUN mkdir build && cd build && \
           -DAEROSPIKE_INCLUDE_DIR="$AS_INC" \
           -DAEROSPIKE_CLIENT_LIBRARY="$AS_LIB" .. && \
     make -j$(nproc)
+
+# 7. Verify build artifacts exist
+RUN ls /app/Release/server /app/Release/indexbuilder /app/Release/_SPTAG.so 2>/dev/null || \
+    (echo "--- Build artifacts missing! ---" && ls -la /app/Release/ && exit 1)

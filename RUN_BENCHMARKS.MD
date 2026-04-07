@@ -72,6 +72,18 @@ axel -n 16 -o base.1B.u8bin https://dl.fbaipublicfiles.com/billion-scale-ann-ben
 
 Notes:
 - `axel` uses a state file `base.1B.u8bin.st` for resume; if a partial exists, it will resume instead of restarting.
+
+Verification:
+
+```bash
+ls -lh /mnt/nvme0/sift1b
+wc -c /mnt/nvme0/sift1b/query.public.10K.u8bin /mnt/nvme0/sift1b/GT.public.1B.ibin
+```
+
+Observed:
+- `base.1B.u8bin` present (~120G)
+- `query.public.10K.u8bin` size = 1,280,008 bytes
+- `GT.public.1B.ibin` size = 8,000,008 bytes
 - If you see `No state file, cannot resume!` that’s not a failure — it just means there’s no `.st` resume file yet (typically on the first attempt, or if you deleted the `.st`).
 - For very large files, prefer `axel` over `wget` since `axel` supports segmented downloads (`-n 16`) and resumes from the `.st` state file.
 
