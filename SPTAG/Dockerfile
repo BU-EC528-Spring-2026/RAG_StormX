@@ -13,7 +13,17 @@ RUN wget https://bootstrap.pypa.io/pip/3.8/get-pip.py && python3.8 get-pip.py &&
 RUN apt-get update && apt-get -y install \
     gcc-9 g++-9 libboost-all-dev \
     libssl-dev libyaml-dev zlib1g-dev \
-    libev-dev libevent-dev libuv1-dev libc6-dev
+    libev-dev libevent-dev libuv1-dev libc6-dev \
+    libsnappy-dev liblz4-dev libzstd-dev
+
+# 2b. Install newer RocksDB (Ubuntu 20.04 package is too old)
+RUN apt-get update && apt-get -y install ca-certificates build-essential && \
+    git clone --depth 1 --branch v8.11.3 https://github.com/facebook/rocksdb.git /tmp/rocksdb && \
+    cmake -S /tmp/rocksdb -B /tmp/rocksdb/build -DCMAKE_BUILD_TYPE=Release \
+        -DWITH_GFLAGS=OFF -DWITH_TESTS=OFF -DWITH_TOOLS=OFF -DWITH_BENCHMARK_TOOLS=OFF && \
+    cmake --build /tmp/rocksdb/build -j"$(nproc)" && \
+    cmake --install /tmp/rocksdb/build && \
+    rm -rf /tmp/rocksdb
 
 # 3. Install Aerospike C Client
 RUN cd /tmp && \
@@ -45,6 +55,7 @@ RUN mkdir build && cd build && \
     echo "--- Found Aerospike Include Dir: $AS_INC ---" && \
     echo "--- Found Aerospike Library: $AS_LIB ---" && \
     cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-9 -DCMAKE_C_COMPILER=gcc-9 -DAEROSPIKE=ON \
+          -DROCKSDB=ON \
           -DAEROSPIKE_INCLUDE_DIR="$AS_INC" \
           -DAEROSPIKE_CLIENT_LIBRARY="$AS_LIB" .. && \
     make -j$(nproc)

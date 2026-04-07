@@ -160,16 +160,32 @@ endif()
 
 set(RocksDB_LIBRARIES "")
 if (ROCKSDB)
-    find_package(RocksDB CONFIG)
-    if((DEFINED RocksDB_DIR) AND RocksDB_DIR)
+    # Prefer a CMake config package (RocksDB::rocksdb), but Ubuntu packages
+    # may not ship RocksDBConfig.cmake. Fall back to headers + library.
+    find_package(RocksDB CONFIG QUIET)
+
+    if (TARGET RocksDB::rocksdb)
         list(APPEND RocksDB_LIBRARIES RocksDB::rocksdb)
         add_definitions(-DROCKSDB)
-	    message (STATUS "Found RocksDB ${RocksDB_VERSION} ${RocksDB_LIBRARIES}")
-        message (STATUS "RocksDB: ${RocksDB_DIR}")
+        message(STATUS "Found RocksDB (CMake package) ${RocksDB_LIBRARIES}")
     else()
-        set(RocksDB_LIBRARIES "")
-        set(uring_LIBRARIES "")
-        message (FATAL_ERROR "Could not find RocksDB!")
+        find_path(ROCKSDB_INCLUDE_DIR NAMES rocksdb/db.h)
+        find_library(ROCKSDB_LIBRARY NAMES rocksdb)
+
+        if (ROCKSDB_INCLUDE_DIR AND ROCKSDB_LIBRARY)
+            add_library(RocksDB::rocksdb UNKNOWN IMPORTED)
+            set_target_properties(RocksDB::rocksdb PROPERTIES
+                IMPORTED_LOCATION "${ROCKSDB_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${ROCKSDB_INCLUDE_DIR}"
+            )
+            list(APPEND RocksDB_LIBRARIES RocksDB::rocksdb)
+            add_definitions(-DROCKSDB)
+            message(STATUS "Found RocksDB (manual) inc=${ROCKSDB_INCLUDE_DIR} lib=${ROCKSDB_LIBRARY}")
+        else()
+            set(RocksDB_LIBRARIES "")
+            set(uring_LIBRARIES "")
+            message(FATAL_ERROR "Could not find RocksDB! (inc=${ROCKSDB_INCLUDE_DIR} lib=${ROCKSDB_LIBRARY})")
+        endif()
     endif()
 endif()
 
