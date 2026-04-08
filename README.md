@@ -10,49 +10,41 @@ Here is our [demo3 slides](https://docs.google.com/presentation/d/1tDpxalJ8GZXDQ
 3. [Setup Guidance](#3-setup-guidance)
    - [Build 2 Aerospike Nodes](#aerospike-2-node-cluster-on-gcp)
    - [Build 1 SPTAG Node](#setting-up-a-single-sptag-node)
-   - [Run the SPTAG Benchmark on top of Aerospike noddes](#run-the-sptag-benchmark)
+   - [Run the SPTAG Benchmark on top of Aerospike nodes](#run-the-sptag-benchmark)
+4. [Benchmarks](#4-benchmarks)
 
 ---
 
 ## 1) Problem Statement
 
-SPTAG:  
-	This is an advanced ANN algorithm that find the nearest neighbor of a vector in high-dimensional space(potentially  thousands of dimension)  
-	  
-	It avoid the dimensionality curse in conventional ANN algorithm by not splitting on all dimensions like what quad-tree/oct-tree does. It use some clustered tree, so the branch doesn't split the space exponentially.(ie the branching factor is way smaller)  
-	  
-	Once we go to the approximate region via the tree, SPTAG provide Relative Neighborhood Graph for that region(the vectors in that region are connected)  Then we just do greedy search in the graph to find the approximated closet vector.  
-	  
-Role of aerospike.  
-	SPTAG can return the nearest vector index given an input vector index, but someone need to retrieve content corresponding to the index.  
-	  
-	A simple dict in python won't work since there are too much data which will use up the RAM, and it's not persistent(it will be lost when power is off)  
-	  
-	And there are so much data that one computer cannot store all of them. Multiple computers are needed, meaning simple dict won't work.  
-	  
-	If there are many users trying to access the simple dict at the same time, there will be terrible lock conflict.  
-	  
-	Aerospike solve these problems by storing data in SSD on multiple machines. It provides a distributed system that can handle lots of users. 
+### What is SPTAG?
 
-TIKV vs Aerospike   
-	Read-heavy  
-	  
-	TIKV is more write friendly but not read friendly  
-	  
-	For TIKV, if it want to read content for a computed neightbor vector index from SPTAG, if content is not in RAM'S block cache, it needs to search through multiple level of disk files, causing latency spike.  
-	While Aerospike skip the OS, directly read the SSD.  
-	Hence aerospike read latency is always <1ms while TIKV can be UP to 10 ms.  
-	  
-	On consistency, compared to TIKV,  Aerospike sacrificed a bit on consistency, with big gain on performance.  
-	  
-	  
-	On locating things:  
-		TIKV use LSM tree(this is a main stream approach).  
-			It have multiple intermediate steps between hash index and disk.  
-				Causing write and read amplification  
-		Aerospike:  
-			It directly store the disk offset for each hash index. No intermediate steps, very fast.  
-Read and write amplification remain 1X
+[SPTAG](https://github.com/microsoft/SPTAG) (Space Partition Tree And Graph) is Microsoft's library for fast approximate nearest-neighbor (ANN) search in high-dimensional vector spaces (hundreds to thousands of dimensions).
+
+Traditional spatial data structures like quad-trees and oct-trees split on every dimension, causing the search space to explode exponentially. SPTAG avoids this **dimensionality curse** by using a **clustered balanced tree** whose branching factor stays small regardless of the number of dimensions. Once the tree narrows the search to an approximate region, SPTAG switches to a **Relative Neighborhood Graph** -- a graph where nearby vectors are connected -- and performs a greedy walk to find the closest match. This two-phase approach (tree descent + graph traversal) keeps both index size and query latency practical at billion-vector scale.
+
+### Why do we need a distributed KV store?
+
+SPTAG returns the *index* of the nearest vector, but something still needs to store and retrieve the actual content (embeddings, posting lists, metadata) that corresponds to each index. A naive in-memory dictionary fails for three reasons:
+
+1. **Scale** -- datasets can be hundreds of gigabytes; they do not fit in a single machine's RAM.
+2. **Persistence** -- an in-memory structure is lost on restart.
+3. **Concurrency** -- many concurrent readers cause lock contention on a single-process data structure.
+
+A distributed key-value database solves all three: data lives on SSD across multiple machines, survives restarts, and serves many readers in parallel.
+
+### Why Aerospike over TiKV?
+
+Our workload is heavily **read-dominated** (many queries per write), so read latency is the critical metric.
+
+| Aspect | TiKV | Aerospike |
+| --- | --- | --- |
+| **Storage engine** | LSM tree -- multiple on-disk levels with compaction | Primary index lives in DRAM; each 64-byte entry stores the record's physical SSD location, so every lookup is a fast index hit in memory followed by a single SSD read |
+| **Read path** | If the key is not in the block cache, TiKV must search through multiple SST file levels, causing tail-latency spikes (up to ~10 ms) | Uses direct I/O (`O_DIRECT`) on raw devices to bypass the OS page cache, keeping read latency consistently < 1 ms |
+| **Read/write amplification** | Multiple intermediate levels cause both read and write amplification | The in-memory index points straight to the record on disk -- no intermediate levels, so amplification stays near 1x |
+| **Consistency trade-off** | Strong consistency via Raft | Relaxed consistency by default, with a large performance gain |
+
+In short, Aerospike trades a small amount of consistency for dramatically lower and more predictable read latency, which is the right trade-off for ANN serving.
 
 ---
 
@@ -60,8 +52,10 @@ Read and write amplification remain 1X
 
 - **Initial Approach:** We initially worked on integrating TiKV as our distributed storage backend. 
 - **Pivot:** Our mentor shifted their interest from integrating TiKV to having us either build our own solution from scratch or heavily modify an existing solution.
-- **Current Architecture (Aerospike):** We pivoted to using **Aerospike**. We chose Aerospike primarily because it does not rely on Log-Structured Merge (LSM) trees and has the unique ability to write directly to NVMe drives using SPDK, completely bypassing OS buffers for massive I/O performance gains.
+- **Current Architecture (Aerospike):** We pivoted to using **Aerospike**. We chose Aerospike primarily because it does not rely on Log-Structured Merge (LSM) trees and uses direct I/O on raw NVMe devices, bypassing the OS page cache for massive I/O performance gains.
 - **Status:** We have successfully run SPTAG on Aerospike! This was achieved by directly modifying the SPTAG source code to include an Aerospike client integration. The current implementation is heavily "vibecoded" (a rapid, experimental proof-of-concept), so our immediate next focus is to refactor the code, ensure the architecture makes logical sense, and optimize for stability.
+- **Infrastructure:** We can spin up a **2-node Aerospike cluster** on GCP with a single deployment script, along with a dedicated SPTAG node with local NVMe SSD.
+- **Benchmarking:** We have been benchmarking SPTAG against **three storage backends** (FileIO, RocksDB, and Aerospike) using the [SIFT1B (BigANN)](https://big-ann-benchmarks.com/) dataset on NVMe SSDs. Initial results show identical recall across all backends, with RocksDB and Aerospike significantly outperforming FileIO in throughput and latency. See the [Benchmarks](#4-benchmarks) section for full details.
 
 ---
 
@@ -536,7 +530,8 @@ sudo apt-get install -y \
     python3-pip \
     curl \
     unzip \
-    wget
+    wget \
+    axel
 
 sudo systemctl enable docker
 sudo systemctl start docker
@@ -674,3 +669,205 @@ cat /app/results/benchmark_aerospike.json
 ```
 Example: 
 ![our Benchmark results](docs/benchmark-results.png)
+
+---
+
+## 4) Benchmarks
+
+This section walks through running the full SPTAG benchmark suite on the SIFT1B (BigANN) dataset across three storage backends: **FileIO**, **RocksDB**, and **Aerospike**. It assumes you have already completed all the steps in [Setup Guidance](#3-setup-guidance) above (Aerospike cluster is running, SPTAG node is provisioned, tools are installed, and the repo is cloned).
+
+> [!WARNING]
+> The benchmark workflow involves downloading a **119 GB** dataset and running compute-intensive index builds. Budget at least **30 minutes** for setup and **5 minutes per benchmark run** at the default 1M-vector scale. Larger scales can take hours (see [Scaling Up](#scaling-up) below). Consider running long downloads and benchmarks inside a `tmux` or `screen` session so they survive SSH disconnects.
+
+### Prepare NVMe Storage
+
+The SPTAG node you provisioned earlier includes a local NVMe SSD. Format and mount it for use by the dataset and benchmark artifacts.
+
+> [!NOTE]
+> The NVMe device name may vary. Run `lsblk | grep nvme` to identify yours (e.g. `/dev/nvme0n1`).
+
+**Run on the SPTAG VM (not inside Docker):**
+
+```bash
+# Identify your NVMe device
+lsblk | grep nvme
+
+# Format with ext4 (no journal for benchmark performance)
+sudo mkfs.ext4 -O ^has_journal /dev/nvme0n1
+
+# Mount
+sudo mkdir -p /mnt/nvme
+sudo mount /dev/nvme0n1 /mnt/nvme
+sudo chown -R "$USER":"$USER" /mnt/nvme
+
+# Create directories for the dataset and benchmark artifacts
+mkdir -p /mnt/nvme/sift1b
+mkdir -p /mnt/nvme/sptag_bench
+```
+
+### Download the SIFT1B (BigANN) Dataset
+
+Source: [https://big-ann-benchmarks.com/](https://big-ann-benchmarks.com/)
+
+> [!WARNING]
+> The base vector file is **119 GB**. Using `axel` with 16 parallel connections, this takes roughly **10 minutes** at ~250 MB/s on GCP. On slower connections it will take significantly longer. The query and ground-truth files are small (under 10 MB each).
+
+**Run on the SPTAG VM (not inside Docker):**
+
+```bash
+cd /mnt/nvme/sift1b
+
+# Query vectors (1.3 MB) and ground truth (7.7 MB)
+wget -O query.public.10K.u8bin https://dl.fbaipublicfiles.com/billion-scale-ann-benchmarks/bigann/query.public.10K.u8bin
+wget -O GT.public.1B.ibin https://dl.fbaipublicfiles.com/billion-scale-ann-benchmarks/bigann/GT.public.1B.ibin
+
+# Base vectors (119 GB) - axel uses parallel segmented download with resume support
+axel -n 16 -o base.1B.u8bin https://dl.fbaipublicfiles.com/billion-scale-ann-benchmarks/bigann/base.1B.u8bin
+```
+
+#### Create 100M Subset
+
+The full 1B base is too large for feasible benchmarks. Extract the first 100M vectors (~12 GB):
+
+```bash
+python3 - <<'PY'
+import os, struct
+src = '/mnt/nvme/sift1b/base.1B.u8bin'
+dst = '/mnt/nvme/sift1b/base.100M.u8bin'
+topk = 100_000_000
+chunk = 64 * 1024 * 1024
+with open(src, 'rb') as fsrc:
+    header = fsrc.read(8)
+    n, d = struct.unpack('II', header)
+    need = topk * d
+    with open(dst, 'wb') as fdst:
+        fdst.write(struct.pack('II', topk, d))
+        remaining = need
+        while remaining:
+            r = min(chunk, remaining)
+            buf = fsrc.read(r)
+            if len(buf) != r:
+                raise SystemExit('short read')
+            fdst.write(buf)
+            remaining -= r
+print('wrote', dst, 'bytes', os.path.getsize(dst))
+PY
+```
+
+#### Verify the Dataset
+
+```bash
+ls -lh /mnt/nvme/sift1b/
+# Expected:
+#   base.1B.u8bin          120G   (1 billion vectors, dim=128, uint8)
+#   base.100M.u8bin         12G   (100 million vectors, dim=128, uint8)
+#   query.public.10K.u8bin 1.3M   (10,000 query vectors)
+#   GT.public.1B.ibin      7.7M   (ground truth, 100 nearest neighbors per query)
+```
+
+File format: `u8bin` = 8-byte header (uint32 num_vectors, uint32 dimension) followed by row-major uint8 vectors.
+
+### Build the SPTAG Docker Image
+
+If you have not already built the Docker image during the setup steps, build it now. The Dockerfile compiles SPTAG with both RocksDB and Aerospike backends enabled (`-DROCKSDB=ON -DAEROSPIKE=ON`).
+
+**Run on the SPTAG VM (not inside Docker):**
+
+```bash
+cd ~/RAG_StormX/SPTAG
+sudo docker build -t sptag .
+```
+
+> [!NOTE]
+> If you already built the image during [Setup Guidance](#3-setup-guidance), you can skip this step.
+
+### Run the Benchmarks
+
+All benchmarks are run inside the Docker container. The `--run_test=SPFreshTest/BenchmarkFromConfig` flag runs only the benchmark test case, skipping all other unit tests. Pre-built benchmark configuration files are provided in the `benchmarks/` directory of the repository.
+
+> [!WARNING]
+> Each benchmark run at the default 1M-vector scale (100k base + 9 batches of 100k inserts) takes approximately **5 minutes**. Ground truth computation adds some overhead on the first run.
+
+#### FileIO on NVMe
+
+```bash
+sudo docker run --rm --net=host \
+  -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.fileio.nvme.ini \
+  -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_fileio.json \
+  -v ~/RAG_StormX:/work \
+  -v /mnt/nvme:/mnt/nvme \
+  sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig'
+```
+
+#### RocksDB on NVMe
+
+```bash
+sudo docker run --rm --net=host \
+  -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.rocksdb.nvme.ini \
+  -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_rocksdb.json \
+  -v ~/RAG_StormX:/work \
+  -v /mnt/nvme:/mnt/nvme \
+  sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig'
+```
+
+#### Aerospike (Remote Node)
+
+The Aerospike backend stores postings on your remote Aerospike cluster instead of local disk. You need to pass the connection parameters as environment variables:
+
+| Variable | Description | Example |
+| --- | --- | --- |
+| `SPTAG_AEROSPIKE_HOST` | Internal IP of an Aerospike node | `10.150.0.33` |
+| `SPTAG_AEROSPIKE_PORT` | Aerospike service port | `3000` |
+| `SPTAG_AEROSPIKE_NAMESPACE` | Namespace configured on the cluster | `sptag_data` |
+| `SPTAG_AEROSPIKE_SET` | Aerospike set name | `sptag` |
+| `SPTAG_AEROSPIKE_BIN` | Aerospike bin name | `posting` |
+
+> [!IMPORTANT]
+> Replace the `SPTAG_AEROSPIKE_HOST` value below with the internal IP of one of your Aerospike nodes (find it in the GCP VM instances list, as described in [Find the Aerospike Internal IP](#find-the-aerospike-internal-ip)).
+
+```bash
+sudo docker run --rm --net=host \
+  -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.aerospike.nvme.ini \
+  -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_aerospike.json \
+  -e SPTAG_AEROSPIKE_HOST=10.150.0.33 \
+  -e SPTAG_AEROSPIKE_PORT=3000 \
+  -e SPTAG_AEROSPIKE_NAMESPACE=sptag_data \
+  -e SPTAG_AEROSPIKE_SET=sptag \
+  -e SPTAG_AEROSPIKE_BIN=posting \
+  -v ~/RAG_StormX:/work \
+  -v /mnt/nvme:/mnt/nvme \
+  sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig'
+```
+
+### Where to Find Results
+
+Each benchmark writes a JSON output file to the path specified by `BENCHMARK_OUTPUT`. After running all three benchmarks, you will find:
+
+| Backend | Output File |
+| --- | --- |
+| FileIO | `/mnt/nvme/sptag_bench/output_fileio.json` |
+| RocksDB | `/mnt/nvme/sptag_bench/output_rocksdb.json` |
+| Aerospike | `/mnt/nvme/sptag_bench/output_aerospike.json` |
+
+To inspect results:
+
+```bash
+cat /mnt/nvme/sptag_bench/output_fileio.json
+cat /mnt/nvme/sptag_bench/output_rocksdb.json
+cat /mnt/nvme/sptag_bench/output_aerospike.json
+```
+
+The benchmark config files used for each run are in the [`benchmarks/`](benchmarks/) directory. You can adjust parameters there (e.g. vector counts, thread counts, distance method) and re-run.
+
+### Scaling Up
+
+To benchmark at larger scale, edit the config files in `benchmarks/` and adjust the parameters below. Keep in mind that larger runs require significantly more RAM and time:
+
+| Scale | BaseVectorCount | InsertVectorCount | BatchNum | Expected RAM | Expected Time |
+| --- | --- | --- | --- | --- | --- |
+| 1M (default) | 100,000 | 900,000 | 9 | ~4 GB | ~5 min |
+| 10M | 1,000,000 | 9,000,000 | 9 | ~16 GB | ~1 hour |
+| 100M | 10,000,000 | 90,000,000 | 9 | ~64 GB | ~12+ hours |
+
+> [!WARNING]
+> At the 100M scale, expect runs to take **12+ hours** and require at least **64 GB of RAM**. Make sure your SPTAG VM has enough resources and that the benchmark is running inside a `tmux` or `screen` session.

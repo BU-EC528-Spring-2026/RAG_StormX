@@ -32,7 +32,7 @@ mkdir -p /mnt/nvme/sptag_bench
 
 ## 2. Download SIFT1B (BigANN) Dataset
 
-Source: https://big-ann-benchmarks.com/
+Source: [https://big-ann-benchmarks.com/](https://big-ann-benchmarks.com/)
 
 ```bash
 cd /mnt/nvme/sift1b
@@ -94,7 +94,7 @@ File format: `u8bin` = 8-byte header (uint32 num_vectors, uint32 dimension) foll
 The Dockerfile builds SPTAG with RocksDB and Aerospike backends enabled:
 
 ```bash
-cd /home/Zhakh/RAG_StormX/SPTAG
+cd ~/RAG_StormX/SPTAG
 sudo docker build -t sptag .
 ```
 
@@ -113,21 +113,23 @@ Benchmark configs live in `benchmarks/` under the repo root. They are read by th
 
 ### Key parameters
 
-| Parameter | Description |
-|-----------|-------------|
-| `VectorPath` | Path to base vectors (u8bin format) |
-| `QueryPath` | Path to query vectors (u8bin format) |
-| `TruthPath` | Set to `truth` to enable ground-truth generation and recall computation. Set to `none` to skip recall and measure only throughput/latency |
-| `IndexPath` | Directory where the SPANN index will be built |
-| `Storage` | Backend: `FILEIO`, `ROCKSDBIO`, or `AEROSPIKEIO` |
-| `BaseVectorCount` | Number of vectors for the initial index build |
-| `InsertVectorCount` | Number of vectors to insert after build (tests update perf) |
-| `BatchNum` | Number of batches to split inserts into |
-| `TopK` | Number of nearest neighbors to retrieve |
-| `NumThreads` | Parallel search threads |
-| `NumQueries` | Number of queries per search round |
-| `Rebuild` | `true` = build from scratch, `false` = load existing index |
-| `Resume` | `-1` = no resume |
+
+| Parameter           | Description                                                                                                                               |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `VectorPath`        | Path to base vectors (u8bin format)                                                                                                       |
+| `QueryPath`         | Path to query vectors (u8bin format)                                                                                                      |
+| `TruthPath`         | Set to `truth` to enable ground-truth generation and recall computation. Set to `none` to skip recall and measure only throughput/latency |
+| `IndexPath`         | Directory where the SPANN index will be built                                                                                             |
+| `Storage`           | Backend: `FILEIO`, `ROCKSDBIO`, or `AEROSPIKEIO`                                                                                          |
+| `BaseVectorCount`   | Number of vectors for the initial index build                                                                                             |
+| `InsertVectorCount` | Number of vectors to insert after build (tests update perf)                                                                               |
+| `BatchNum`          | Number of batches to split inserts into                                                                                                   |
+| `TopK`              | Number of nearest neighbors to retrieve                                                                                                   |
+| `NumThreads`        | Parallel search threads                                                                                                                   |
+| `NumQueries`        | Number of queries per search round                                                                                                        |
+| `Rebuild`           | `true` = build from scratch, `false` = load existing index                                                                                |
+| `Resume`            | `-1` = no resume                                                                                                                          |
+
 
 ### Config files
 
@@ -188,13 +190,15 @@ sudo docker run --rm --net=host \
 
 The Aerospike backend stores postings on a remote Aerospike cluster instead of local disk. Connection parameters are passed as environment variables:
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `SPTAG_AEROSPIKE_HOST` | Aerospike node IP | `10.150.0.33` |
-| `SPTAG_AEROSPIKE_PORT` | Aerospike port | `3000` |
-| `SPTAG_AEROSPIKE_NAMESPACE` | Aerospike namespace | `sptag_data` |
-| `SPTAG_AEROSPIKE_SET` | Aerospike set name | `sptag` |
-| `SPTAG_AEROSPIKE_BIN` | Aerospike bin name | `posting` |
+
+| Variable                    | Description         | Example       |
+| --------------------------- | ------------------- | ------------- |
+| `SPTAG_AEROSPIKE_HOST`      | Aerospike node IP   | `10.150.0.33` |
+| `SPTAG_AEROSPIKE_PORT`      | Aerospike port      | `3000`        |
+| `SPTAG_AEROSPIKE_NAMESPACE` | Aerospike namespace | `sptag_data`  |
+| `SPTAG_AEROSPIKE_SET`       | Aerospike set name  | `sptag`       |
+| `SPTAG_AEROSPIKE_BIN`       | Aerospike bin name  | `posting`     |
+
 
 ```bash
 sudo docker run --rm --net=host \
@@ -216,16 +220,18 @@ Configuration: 100k base vectors, 9 batches of 100k inserts (total 1M vectors), 
 
 ### Summary (after final batch -- 1M total vectors)
 
-| Metric | FileIO (NVMe) | RocksDB (NVMe) | Aerospike (10.150.0.33) |
-|--------|--------------|----------------|-------------------------|
-| Build time (s) | 83.2 | 46.8 | 45.2 |
-| Initial QPS (100k vectors) | 2,429 | 9,612 | 5,823 |
-| Initial recall@10 | 0.807 | 0.807 | 0.807 |
-| Final QPS (1M vectors) | 1,196 | 2,927 | 2,872 |
-| Final p50 latency (us) | 12.52 | 5.62 | 5.26 |
-| Final p99 latency (us) | 32.18 | 12.14 | 10.12 |
-| Final recall@10 | 0.841 | 0.841 | 0.841 |
-| Insert throughput (vec/s, batch 9) | 5,661 | 6,758 | 6,822 |
+
+| Metric                             | FileIO (NVMe) | RocksDB (NVMe) | Aerospike (10.150.0.33) |
+| ---------------------------------- | ------------- | -------------- | ----------------------- |
+| Build time (s)                     | 83.2          | 46.8           | 45.2                    |
+| Initial QPS (100k vectors)         | 2,429         | 9,612          | 5,823                   |
+| Initial recall@10                  | 0.807         | 0.807          | 0.807                   |
+| Final QPS (1M vectors)             | 1,196         | 2,927          | 2,872                   |
+| Final p50 latency (us)             | 12.52         | 5.62           | 5.26                    |
+| Final p99 latency (us)             | 32.18         | 12.14          | 10.12                   |
+| Final recall@10                    | 0.841         | 0.841          | 0.841                   |
+| Insert throughput (vec/s, batch 9) | 5,661         | 6,758          | 6,822                   |
+
 
 ### Key observations
 
@@ -237,6 +243,7 @@ Configuration: 100k base vectors, 9 batches of 100k inserts (total 1M vectors), 
 ### Full JSON results
 
 Output files on NVMe:
+
 - `/mnt/nvme/sptag_bench/output_fileio.json`
 - `/mnt/nvme/sptag_bench/output_rocksdb.json`
 - `/mnt/nvme/sptag_bench/output_aerospike.json`
@@ -245,11 +252,13 @@ Output files on NVMe:
 
 To benchmark at larger scale, adjust the config parameters:
 
-| Scale | BaseVectorCount | InsertVectorCount | BatchNum | Expected RAM | Expected Time |
-|-------|----------------|-------------------|----------|-------------|--------------|
-| 1M (current) | 100,000 | 900,000 | 9 | ~4 GB | ~5 min |
-| 10M | 1,000,000 | 9,000,000 | 9 | ~16 GB | ~1 hour |
-| 100M | 10,000,000 | 90,000,000 | 9 | ~64 GB | ~12+ hours |
+
+| Scale        | BaseVectorCount | InsertVectorCount | BatchNum | Expected RAM | Expected Time |
+| ------------ | --------------- | ----------------- | -------- | ------------ | ------------- |
+| 1M (current) | 100,000         | 900,000           | 9        | ~4 GB        | ~5 min        |
+| 10M          | 1,000,000       | 9,000,000         | 9        | ~16 GB       | ~1 hour       |
+| 100M         | 10,000,000      | 90,000,000        | 9        | ~64 GB       | ~12+ hours    |
+
 
 ## Run Log
 
@@ -271,3 +280,4 @@ To benchmark at larger scale, adjust the config parameters:
 - Ran all three benchmarks with `--run_test=SPFreshTest/BenchmarkFromConfig`
 - Aerospike namespace discovered as `sptag_data` on node `10.150.0.33`
 - All benchmarks completed successfully with recall@10 values
+
