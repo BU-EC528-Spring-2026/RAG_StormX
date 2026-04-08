@@ -1,125 +1,273 @@
-# SPTAG SIFT (BigANN) Benchmarks Run Log
+# SPTAG SIFT1B (BigANN) Benchmarks
 
-This file is a **command-by-command run log** for downloading BigANN SIFT data onto local NVMe, building SPTAG with the required backends, and running the benchmark configs (FileIO, RocksDB, Aerospike) as described in the attached plan.
+This document describes how to download the SIFT1B dataset, build the SPTAG Docker image, configure benchmarks for three storage backends (FileIO, RocksDB, Aerospike), and run them on local NVMe SSD.
 
-## Host + paths (assumptions from plan)
-- Dataset NVMe mount: `/mnt/nvme0`
-- Index/artifacts NVMe mount: `/mnt/nvme1`
-- Dataset dir: `/mnt/nvme0/sift1b`
-- Repo root: `/home/Zhakh/RAG_StormX`
+## Prerequisites
 
-## 2026-04-07
+- Ubuntu host with NVMe SSD (`/dev/nvme0n1` or similar)
+- Docker installed (`sudo` access required if user is not in `docker` group)
+- `axel` or `wget` for downloading the dataset
+- For Aerospike benchmarks: a running Aerospike node with a configured namespace
 
-### Install downloader + create dataset dir
+## 1. Prepare NVMe Storage
+
+Format and mount the NVMe device:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y axel wget ca-certificates
-sudo mkdir -p /mnt/nvme0/sift1b
-sudo chown -R "$USER":"$USER" /mnt/nvme0/sift1b
-ls -ld /mnt/nvme0/sift1b
+# Identify NVMe device
+lsblk | grep nvme
+
+# Format with ext4 (no journal for benchmark performance)
+sudo mkfs.ext4 -O ^has_journal /dev/nvme0n1
+
+# Mount
+sudo mkdir -p /mnt/nvme
+sudo mount /dev/nvme0n1 /mnt/nvme
+sudo chown -R "$USER":"$USER" /mnt/nvme
+
+# Create directories for dataset and benchmark artifacts
+mkdir -p /mnt/nvme/sift1b
+mkdir -p /mnt/nvme/sptag_bench
 ```
 
-Result:
-- `axel` already installed.
-- `/mnt/nvme0/sift1b` created and writable by user.
+## 2. Download SIFT1B (BigANN) Dataset
 
-#### If `axel` is missing (quick install recipes)
-
-Host (Ubuntu/Debian):
+Source: https://big-ann-benchmarks.com/
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y axel
-axel --version
-```
+cd /mnt/nvme/sift1b
 
-Inside the SPTAG Docker container (Ubuntu 20.04 base):
-
-```bash
-apt-get update
-apt-get install -y axel
-axel --version
-```
-
-If `apt-get install axel` fails, you can still download with `wget` (slower, but universally available):
-
-```bash
-sudo apt-get update
-sudo apt-get install -y wget ca-certificates
-wget --version
-```
-
-### Download dataset files (BigANN)
-
-Target URLs:
-- `base.1B.u8bin`: `https://dl.fbaipublicfiles.com/billion-scale-ann-benchmarks/bigann/base.1B.u8bin`
-- `query.public.10K.u8bin`: `https://dl.fbaipublicfiles.com/billion-scale-ann-benchmarks/bigann/query.public.10K.u8bin`
-- `GT.public.1B.ibin`: `https://dl.fbaipublicfiles.com/billion-scale-ann-benchmarks/bigann/GT.public.1B.ibin`
-
-Commands executed:
-
-```bash
-cd /mnt/nvme0/sift1b
-
-# query + GT are small; base is huge and uses axel resume via .st file.
+# Query vectors (1.3 MB) and ground truth (7.7 MB)
 wget -O query.public.10K.u8bin https://dl.fbaipublicfiles.com/billion-scale-ann-benchmarks/bigann/query.public.10K.u8bin
 wget -O GT.public.1B.ibin https://dl.fbaipublicfiles.com/billion-scale-ann-benchmarks/bigann/GT.public.1B.ibin
 
-# base (119+ GB)
+# Base vectors (119 GB) - use axel for parallel segmented download with resume
 axel -n 16 -o base.1B.u8bin https://dl.fbaipublicfiles.com/billion-scale-ann-benchmarks/bigann/base.1B.u8bin
 ```
 
-Notes:
-- `axel` uses a state file `base.1B.u8bin.st` for resume; if a partial exists, it will resume instead of restarting.
+If `axel` is not installed: `sudo apt-get install -y axel`
 
-Verification:
+### Create 100M subset
 
-```bash
-ls -lh /mnt/nvme0/sift1b
-wc -c /mnt/nvme0/sift1b/query.public.10K.u8bin /mnt/nvme0/sift1b/GT.public.1B.ibin
-```
-
-Observed:
-- `base.1B.u8bin` present (~120G)
-- `query.public.10K.u8bin` size = 1,280,008 bytes
-- `GT.public.1B.ibin` size = 8,000,008 bytes
-- If you see `No state file, cannot resume!` that’s not a failure — it just means there’s no `.st` resume file yet (typically on the first attempt, or if you deleted the `.st`).
-- For very large files, prefer `axel` over `wget` since `axel` supports segmented downloads (`-n 16`) and resumes from the `.st` state file.
-
-### Install build dependencies (RocksDB headers/libs, build tools, etc.)
+The full 1B base is too large for feasible benchmarks. Extract the first 100M vectors:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y \
-  build-essential cmake ninja-build pkg-config \
-  libboost-all-dev libtbb-dev libnuma-dev \
-  libsnappy-dev libjemalloc-dev libgflags-dev \
-  zlib1g-dev libssl-dev libyaml-dev \
-  librocksdb-dev
+python3 - <<'PY'
+import os, struct
+src = '/mnt/nvme/sift1b/base.1B.u8bin'
+dst = '/mnt/nvme/sift1b/base.100M.u8bin'
+topk = 100_000_000
+chunk = 64 * 1024 * 1024
+with open(src, 'rb') as fsrc:
+    header = fsrc.read(8)
+    n, d = struct.unpack('II', header)
+    need = topk * d
+    with open(dst, 'wb') as fdst:
+        fdst.write(struct.pack('II', topk, d))
+        remaining = need
+        while remaining:
+            r = min(chunk, remaining)
+            buf = fsrc.read(r)
+            if len(buf) != r:
+                raise SystemExit('short read')
+            fdst.write(buf)
+            remaining -= r
+print('wrote', dst, 'bytes', os.path.getsize(dst))
+PY
 ```
 
-Status:
-- Completed successfully. Verified installed packages:
-  - `libboost-all-dev`
-  - `librocksdb-dev`
-  - `libtbb-dev`
-  - `libyaml-dev`
+### Verify dataset
 
-### Aerospike client + Aerospike-enabled build approach
+```bash
+ls -lh /mnt/nvme/sift1b/
+# Expected:
+#   base.1B.u8bin          120G   (1 billion vectors, dim=128, uint8)
+#   base.100M.u8bin         12G   (100 million vectors, dim=128, uint8)
+#   query.public.10K.u8bin 1.3M   (10,000 query vectors)
+#   GT.public.1B.ibin      7.7M   (ground truth, 100 nearest neighbors per query)
+```
 
-The repo already provides a Docker build that installs the **Aerospike C client**. See:
-- `SPTAG/Dockerfile` (installs Aerospike client .deb from Aerospike artifacts).
-- `SPTAG/launch_docker.sh` (runs `docker run -it --rm -v $(pwd):/app -v /tmp:/tmp sptag /bin/bash`).
+File format: `u8bin` = 8-byte header (uint32 num_vectors, uint32 dimension) followed by row-major uint8 vectors.
 
-Because we also need the **RocksDB** backend (`Storage=ROCKSDBIO`), we updated `SPTAG/Dockerfile` to install `librocksdb-dev` and build SPTAG with `-DROCKSDB=ON` as well.
+## 3. Build SPTAG Docker Image
 
-#### Build docker image
-
-Note: current user is not in the `docker` group, so docker commands require `sudo`.
+The Dockerfile builds SPTAG with RocksDB and Aerospike backends enabled:
 
 ```bash
 cd /home/Zhakh/RAG_StormX/SPTAG
 sudo docker build -t sptag .
 ```
 
+This compiles with `-DROCKSDB=ON -DAEROSPIKE=ON`, producing `/app/Release/SPTAGTest` inside the image.
+
+### Verify the image
+
+```bash
+sudo docker run --rm sptag bash -lc 'ls -lah /app/Release/SPTAGTest'
+sudo docker run --rm sptag bash -lc 'strings /app/Release/SPTAGTest | grep -E "ROCKSDBIO|AEROSPIKEIO|FILEIO" | head'
+```
+
+## 4. Benchmark Configuration
+
+Benchmark configs live in `benchmarks/` under the repo root. They are read by the `BenchmarkFromConfig` test case in `SPTAG/Test/src/SPFreshTest.cpp` via the `BENCHMARK_CONFIG` environment variable.
+
+### Key parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `VectorPath` | Path to base vectors (u8bin format) |
+| `QueryPath` | Path to query vectors (u8bin format) |
+| `TruthPath` | Set to `truth` to enable ground-truth generation and recall computation. Set to `none` to skip recall and measure only throughput/latency |
+| `IndexPath` | Directory where the SPANN index will be built |
+| `Storage` | Backend: `FILEIO`, `ROCKSDBIO`, or `AEROSPIKEIO` |
+| `BaseVectorCount` | Number of vectors for the initial index build |
+| `InsertVectorCount` | Number of vectors to insert after build (tests update perf) |
+| `BatchNum` | Number of batches to split inserts into |
+| `TopK` | Number of nearest neighbors to retrieve |
+| `NumThreads` | Parallel search threads |
+| `NumQueries` | Number of queries per search round |
+| `Rebuild` | `true` = build from scratch, `false` = load existing index |
+| `Resume` | `-1` = no resume |
+
+### Config files
+
+**FileIO** (`benchmarks/benchmark.fileio.nvme.ini`):
+
+```ini
+[Benchmark]
+VectorPath=/mnt/nvme/sift1b/base.100M.u8bin
+QueryPath=/mnt/nvme/sift1b/query.public.10K.u8bin
+TruthPath=truth
+IndexPath=/mnt/nvme/sptag_bench/spann_index_fileio
+ValueType=UInt8
+Dimension=128
+BaseVectorCount=100000
+InsertVectorCount=900000
+DeleteVectorCount=0
+BatchNum=9
+TopK=10
+NumThreads=16
+NumQueries=1000
+DistMethod=L2
+Rebuild=true
+Resume=-1
+Storage=FILEIO
+```
+
+**RocksDB** (`benchmarks/benchmark.rocksdb.nvme.ini`): same as above with `Storage=ROCKSDBIO` and `IndexPath=.../spann_index_rocksdb`.
+
+**Aerospike** (`benchmarks/benchmark.aerospike.nvme.ini`): same as above with `Storage=AEROSPIKEIO` and `IndexPath=.../spann_index_aerospike`. Aerospike connection is configured via environment variables at runtime (not in the INI file).
+
+## 5. Running Benchmarks
+
+All benchmarks are run inside the Docker container. The `--run_test=SPFreshTest/BenchmarkFromConfig` flag runs only the benchmark test case, skipping the 150+ other unit tests.
+
+### FileIO on NVMe
+
+```bash
+sudo docker run --rm --net=host \
+  -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.fileio.nvme.ini \
+  -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_fileio.json \
+  -v /home/Zhakh/RAG_StormX:/work \
+  -v /mnt/nvme:/mnt/nvme \
+  sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig'
+```
+
+### RocksDB on NVMe
+
+```bash
+sudo docker run --rm --net=host \
+  -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.rocksdb.nvme.ini \
+  -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_rocksdb.json \
+  -v /home/Zhakh/RAG_StormX:/work \
+  -v /mnt/nvme:/mnt/nvme \
+  sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig'
+```
+
+### Aerospike (remote node)
+
+The Aerospike backend stores postings on a remote Aerospike cluster instead of local disk. Connection parameters are passed as environment variables:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `SPTAG_AEROSPIKE_HOST` | Aerospike node IP | `10.150.0.33` |
+| `SPTAG_AEROSPIKE_PORT` | Aerospike port | `3000` |
+| `SPTAG_AEROSPIKE_NAMESPACE` | Aerospike namespace | `sptag_data` |
+| `SPTAG_AEROSPIKE_SET` | Aerospike set name | `sptag` |
+| `SPTAG_AEROSPIKE_BIN` | Aerospike bin name | `posting` |
+
+```bash
+sudo docker run --rm --net=host \
+  -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.aerospike.nvme.ini \
+  -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_aerospike.json \
+  -e SPTAG_AEROSPIKE_HOST=10.150.0.33 \
+  -e SPTAG_AEROSPIKE_PORT=3000 \
+  -e SPTAG_AEROSPIKE_NAMESPACE=sptag_data \
+  -e SPTAG_AEROSPIKE_SET=sptag \
+  -e SPTAG_AEROSPIKE_BIN=posting \
+  -v /home/Zhakh/RAG_StormX:/work \
+  -v /mnt/nvme:/mnt/nvme \
+  sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig'
+```
+
+## 6. Results (2026-04-08)
+
+Configuration: 100k base vectors, 9 batches of 100k inserts (total 1M vectors), 1000 queries per round, 16 search threads, L2 distance, TopK=10, recall@10 with brute-force ground truth.
+
+### Summary (after final batch -- 1M total vectors)
+
+| Metric | FileIO (NVMe) | RocksDB (NVMe) | Aerospike (10.150.0.33) |
+|--------|--------------|----------------|-------------------------|
+| Build time (s) | 83.2 | 46.8 | 45.2 |
+| Initial QPS (100k vectors) | 2,429 | 9,612 | 5,823 |
+| Initial recall@10 | 0.807 | 0.807 | 0.807 |
+| Final QPS (1M vectors) | 1,196 | 2,927 | 2,872 |
+| Final p50 latency (us) | 12.52 | 5.62 | 5.26 |
+| Final p99 latency (us) | 32.18 | 12.14 | 10.12 |
+| Final recall@10 | 0.841 | 0.841 | 0.841 |
+| Insert throughput (vec/s, batch 9) | 5,661 | 6,758 | 6,822 |
+
+### Key observations
+
+- Recall is identical across all three backends (~0.807 at 100k, ~0.841 at 1M) -- this is expected since the head index and search algorithm are the same; only the posting storage differs.
+- RocksDB on NVMe delivers the best initial QPS (9,612) and maintains good performance as the index grows.
+- Aerospike shows the tightest latency distribution (p99 = 10.12 us at 1M vectors) despite going over the network, with comparable throughput to local RocksDB.
+- FileIO has higher latency and lower QPS, likely due to the async block-based file I/O overhead vs RocksDB's optimized LSM tree.
+
+### Full JSON results
+
+Output files on NVMe:
+- `/mnt/nvme/sptag_bench/output_fileio.json`
+- `/mnt/nvme/sptag_bench/output_rocksdb.json`
+- `/mnt/nvme/sptag_bench/output_aerospike.json`
+
+## 7. Scaling Up
+
+To benchmark at larger scale, adjust the config parameters:
+
+| Scale | BaseVectorCount | InsertVectorCount | BatchNum | Expected RAM | Expected Time |
+|-------|----------------|-------------------|----------|-------------|--------------|
+| 1M (current) | 100,000 | 900,000 | 9 | ~4 GB | ~5 min |
+| 10M | 1,000,000 | 9,000,000 | 9 | ~16 GB | ~1 hour |
+| 100M | 10,000,000 | 90,000,000 | 9 | ~64 GB | ~12+ hours |
+
+## Run Log
+
+### 2026-04-07
+
+- Installed `axel`, `wget`, build dependencies
+- Downloaded SIFT1B dataset to `/mnt/nvme0/sift1b` (on root disk, NVMe was not yet mounted)
+- Built SPTAG Docker image with `-DROCKSDB=ON -DAEROSPIKE=ON`
+- Created 100M subset (`base.100M.u8bin`)
+- Initial FileIO benchmark run (with `TruthPath=none`, recall was null)
+
+### 2026-04-08
+
+- Formatted and mounted NVMe device (`/dev/nvme0n1`, 375 GB) at `/mnt/nvme`
+- Re-downloaded dataset directly to NVMe via `axel` (~10 min at ~250 MB/s)
+- Created 100M subset on NVMe
+- Created benchmark configs for FileIO, RocksDB, Aerospike in `benchmarks/`
+- Fixed `TruthPath=truth` to enable recall computation
+- Ran all three benchmarks with `--run_test=SPFreshTest/BenchmarkFromConfig`
+- Aerospike namespace discovered as `sptag_data` on node `10.150.0.33`
+- All benchmarks completed successfully with recall@10 values
