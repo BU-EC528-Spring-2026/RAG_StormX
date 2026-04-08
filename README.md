@@ -727,7 +727,7 @@ axel -n 16 -o base.1B.u8bin https://dl.fbaipublicfiles.com/billion-scale-ann-ben
 
 #### Create 100M Subset
 
-The full 1B base is too large for feasible benchmarks. Extract the first 100M vectors (~12 GB):
+The full 1B base is too large for feasible benchmarks. Extract the first 100M vectors (~12 GB) (this will take some time):
 
 ```bash
 python3 - <<'PY'
