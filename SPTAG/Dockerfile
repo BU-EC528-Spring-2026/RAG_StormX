@@ -5,7 +5,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # 1. Install base dependencies
 RUN apt-get update && apt-get -y install wget build-essential swig cmake git libnuma-dev python3.8-dev python3-distutils gcc-8 g++-8 \
-    libboost-filesystem-dev libboost-test-dev libboost-serialization-dev libboost-regex-dev libboost-thread-dev libboost-system-dev libtbb-dev
+    libboost-filesystem-dev libboost-test-dev libboost-serialization-dev libboost-regex-dev libboost-thread-dev libboost-system-dev libtbb-dev \
+    pkg-config protobuf-compiler libprotobuf-dev libgrpc++-dev protobuf-compiler-grpc
 
 RUN wget https://bootstrap.pypa.io/pip/3.8/get-pip.py && python3.8 get-pip.py && python3.8 -m pip install numpy
 
@@ -53,7 +54,8 @@ COPY GPUSupport ./GPUSupport/
 COPY ThirdParty ./ThirdParty/
 
 # 6. Build
-RUN mkdir build && cd build && \
+RUN cd /app/ThirdParty/kvproto && ./generate_cpp.sh && \
+    mkdir /app/build && cd /app/build && \
     AS_INC=$(find /usr /opt /lib -name "aerospike.h" 2>/dev/null | grep "aerospike/aerospike.h" | head -n 1 | sed 's|/aerospike/aerospike.h||') && \
     AS_LIB=$(find /usr /opt /lib -name "libaerospike.so" 2>/dev/null | head -n 1) && \
     if [ -z "$AS_LIB" ]; then AS_LIB=$(find /usr /opt /lib -name "libaerospike.a" 2>/dev/null | head -n 1); fi && \
@@ -61,6 +63,7 @@ RUN mkdir build && cd build && \
     echo "--- Found Aerospike Library: $AS_LIB ---" && \
     cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-9 -DCMAKE_C_COMPILER=gcc-9 -DAEROSPIKE=ON \
           -DROCKSDB=ON \
+        -DTIKV=ON \
           -DAEROSPIKE_INCLUDE_DIR="$AS_INC" \
           -DAEROSPIKE_CLIENT_LIBRARY="$AS_LIB" .. && \
     make -j$(nproc)
