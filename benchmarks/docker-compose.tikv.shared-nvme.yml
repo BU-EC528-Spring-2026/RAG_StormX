@@ -1,0 +1,105 @@
+services:
+  pd0:
+    image: pingcap/pd:v7.5.1
+    container_name: pd0
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - --name=pd0
+      - --client-urls=http://0.0.0.0:2379
+      - --peer-urls=http://0.0.0.0:2380
+      - --advertise-client-urls=http://127.0.0.1:2379
+      - --advertise-peer-urls=http://127.0.0.1:2380
+      - --initial-cluster=pd0=http://127.0.0.1:2380,pd1=http://127.0.0.1:2480,pd2=http://127.0.0.1:2580
+      - --initial-cluster-state=new
+      - --data-dir=/var/lib/pd
+    volumes:
+      - ${NVME_ROOT:-/mnt/nvme/tikv_shared}/pd0:/var/lib/pd
+
+  pd1:
+    image: pingcap/pd:v7.5.1
+    container_name: pd1
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - --name=pd1
+      - --client-urls=http://0.0.0.0:2479
+      - --peer-urls=http://0.0.0.0:2480
+      - --advertise-client-urls=http://127.0.0.1:2479
+      - --advertise-peer-urls=http://127.0.0.1:2480
+      - --initial-cluster=pd0=http://127.0.0.1:2380,pd1=http://127.0.0.1:2480,pd2=http://127.0.0.1:2580
+      - --initial-cluster-state=new
+      - --data-dir=/var/lib/pd
+    volumes:
+      - ${NVME_ROOT:-/mnt/nvme/tikv_shared}/pd1:/var/lib/pd
+
+  pd2:
+    image: pingcap/pd:v7.5.1
+    container_name: pd2
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - --name=pd2
+      - --client-urls=http://0.0.0.0:2579
+      - --peer-urls=http://0.0.0.0:2580
+      - --advertise-client-urls=http://127.0.0.1:2579
+      - --advertise-peer-urls=http://127.0.0.1:2580
+      - --initial-cluster=pd0=http://127.0.0.1:2380,pd1=http://127.0.0.1:2480,pd2=http://127.0.0.1:2580
+      - --initial-cluster-state=new
+      - --data-dir=/var/lib/pd
+    volumes:
+      - ${NVME_ROOT:-/mnt/nvme/tikv_shared}/pd2:/var/lib/pd
+
+  tikv0:
+    image: pingcap/tikv:v7.5.1
+    container_name: tikv0
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - --addr=0.0.0.0:20160
+      - --advertise-addr=127.0.0.1:20160
+      - --status-addr=0.0.0.0:20180
+      - --data-dir=/var/lib/tikv
+      - --pd=127.0.0.1:2379,127.0.0.1:2479,127.0.0.1:2579
+    depends_on:
+      - pd0
+      - pd1
+      - pd2
+    volumes:
+      - ${NVME_ROOT:-/mnt/nvme/tikv_shared}/tikv0:/var/lib/tikv
+
+  tikv1:
+    image: pingcap/tikv:v7.5.1
+    container_name: tikv1
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - --addr=0.0.0.0:20161
+      - --advertise-addr=127.0.0.1:20161
+      - --status-addr=0.0.0.0:20181
+      - --data-dir=/var/lib/tikv
+      - --pd=127.0.0.1:2379,127.0.0.1:2479,127.0.0.1:2579
+    depends_on:
+      - pd0
+      - pd1
+      - pd2
+    volumes:
+      - ${NVME_ROOT:-/mnt/nvme/tikv_shared}/tikv1:/var/lib/tikv
+
+  tikv2:
+    image: pingcap/tikv:v7.5.1
+    container_name: tikv2
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - --addr=0.0.0.0:20162
+      - --advertise-addr=127.0.0.1:20162
+      - --status-addr=0.0.0.0:20182
+      - --data-dir=/var/lib/tikv
+      - --pd=127.0.0.1:2379,127.0.0.1:2479,127.0.0.1:2579
+    depends_on:
+      - pd0
+      - pd1
+      - pd2
+    volumes:
+      - ${NVME_ROOT:-/mnt/nvme/tikv_shared}/tikv2:/var/lib/tikv
