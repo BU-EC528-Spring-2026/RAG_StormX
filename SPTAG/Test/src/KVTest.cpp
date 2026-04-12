@@ -5,7 +5,6 @@
 #include "inc/Core/SPANN/IExtraSearcher.h"
 #include "inc/Helper/AerospikeKeyValueIO.h"
 #include "inc/Test.h"
-#include "inc/Helper/TiKVKeyValueIO.h"
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
@@ -42,6 +41,10 @@
 
 #ifdef SPDK
 #include "inc/Core/SPANN/ExtraSPDKController.h"
+#endif
+
+#ifdef TIKV
+#include "inc/Core/SPANN/ExtraTiKVController.h"
 #endif
 
 using namespace SPTAG;
@@ -162,9 +165,24 @@ void Test(std::string path, std::string type, bool debug = false)
 #endif
     }
 
-    else if (type == "TiKV") 
+    else if (type == "TiKV")
     {
-    	db.reset(new Helper::TiKVKeyValueIO("/tmp/sptag_tikv.sock", 10*1024*1024));
+#ifdef TIKV
+        std::string pdAddresses = "127.0.0.1:2379";
+        std::string keyPrefix = "kvtest";
+        if (const char *envPd = std::getenv("SPTAG_TIKV_PD"))
+        {
+            pdAddresses = envPd;
+        }
+        if (const char *envPrefix = std::getenv("SPTAG_TIKV_PREFIX"))
+        {
+            keyPrefix = envPrefix;
+        }
+        db.reset(new TiKVIO(pdAddresses, keyPrefix));
+#else
+        std::cerr << "TiKV is not supported in this build. Rebuild with -DTIKV=ON." << std::endl;
+        return;
+#endif
     }
     else if (type == "Aerospike")
     {
@@ -307,7 +325,12 @@ BOOST_AUTO_TEST_CASE(FileTest)
 
 BOOST_AUTO_TEST_CASE(TiKVTest)
 {
+#ifndef TIKV
+    BOOST_TEST_MESSAGE("Skipping KVTest/TiKVTest: SPTAG was built without TiKV support (-DTIKV=ON).");
+    return;
+#else
     Test(std::string("tmp_tikv") + FolderSep + "test", "TiKV", false);
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(AerospikeTest)

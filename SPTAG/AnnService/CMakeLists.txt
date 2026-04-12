@@ -4,13 +4,6 @@
 set(AnnService ${PROJECT_SOURCE_DIR}/AnnService)
 set(Zstd ${PROJECT_SOURCE_DIR}/ThirdParty/zstd)
 
-############# TIKV
-set(TIKV_INCLUDE_DIR "/path/to/your/tikv_client/include")
-set(TIKV_LIBRARIES "/path/to/your/tikv_client/lib/libtikv_client.a") # Add gRPC/Protobuf libs here too if needed
-
-include_directories(${TIKV_INCLUDE_DIR})
-############# TIKV
-
 
 include_directories(${AnnService})
 include_directories(${Zstd}/lib)
@@ -79,10 +72,10 @@ if(${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU")
     target_compile_options(DistanceUtils PRIVATE -mavx2 -mavx -msse -msse2 -mavx512f -mavx512bw -mavx512dq -fPIC)
 endif()
 
-add_library (SPTAGLib SHARED ${SRC_FILES} ${HDR_FILES})
-target_link_libraries (SPTAGLib DistanceUtils ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} libzstd_shared ${NUMA_LIBRARY} ${TBB_LIBRARIES} ${SPDK_LIBRARIES})
-add_library (SPTAGLibStatic STATIC ${SRC_FILES} ${HDR_FILES})
-target_link_libraries (SPTAGLibStatic DistanceUtils ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} libzstd_static ${NUMA_LIBRARY_STATIC} ${TBB_LIBRARIES} ${SPDK_LIBRARIES})
+add_library (SPTAGLib SHARED ${SRC_FILES} ${HDR_FILES} ${TiKV_PROTO_SOURCES})
+target_link_libraries (SPTAGLib DistanceUtils ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} libzstd_shared ${NUMA_LIBRARY} ${TBB_LIBRARIES} ${SPDK_LIBRARIES} ${TiKV_LIBRARIES})
+add_library (SPTAGLibStatic STATIC ${SRC_FILES} ${HDR_FILES} ${TiKV_PROTO_SOURCES})
+target_link_libraries (SPTAGLibStatic DistanceUtils ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} libzstd_static ${NUMA_LIBRARY_STATIC} ${TBB_LIBRARIES} ${SPDK_LIBRARIES} ${TiKV_LIBRARIES})
 
 if(${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU")
     target_compile_options(SPTAGLibStatic PRIVATE -fPIC)
@@ -143,10 +136,10 @@ add_executable(ssdserving ${SSD_SERVING_HDR_FILES} ${SSD_SERVING_FILES})
 add_executable(spfresh ${SPFRESH_HDR_FILES} ${SPFRESH_FILES})
 add_executable(keyvaluetest ${KEYVALUETEST_HDR_FILES} ${KEYVALUETEST_FILES})
 add_executable(usefultool ${USEFULTOOL_FILES})
-target_link_libraries(ssdserving SPTAGLibStatic ${Boost_LIBRARIES} ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} ${TBB_LIBRARIES} ${SPDK_LIBRARIES})
-target_link_libraries(spfresh SPTAGLibStatic ${Boost_LIBRARIES} ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} ${TBB_LIBRARIES} ${SPDK_LIBRARIES})
-target_link_libraries(keyvaluetest SPTAGLibStatic ${Boost_LIBRARIES} ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} ${TBB_LIBRARIES} ${SPDK_LIBRARIES})
-target_link_libraries(usefultool SPTAGLibStatic ${Boost_LIBRARIES} ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} ${TBB_LIBRARIES} ${SPDK_LIBRARIES})
+target_link_libraries(ssdserving SPTAGLibStatic ${Boost_LIBRARIES} ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} ${TBB_LIBRARIES} ${SPDK_LIBRARIES} ${TiKV_LIBRARIES})
+target_link_libraries(spfresh SPTAGLibStatic ${Boost_LIBRARIES} ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} ${TBB_LIBRARIES} ${SPDK_LIBRARIES} ${TiKV_LIBRARIES})
+target_link_libraries(keyvaluetest SPTAGLibStatic ${Boost_LIBRARIES} ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} ${TBB_LIBRARIES} ${SPDK_LIBRARIES} ${TiKV_LIBRARIES})
+target_link_libraries(usefultool SPTAGLibStatic ${Boost_LIBRARIES} ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} ${TBB_LIBRARIES} ${SPDK_LIBRARIES} ${TiKV_LIBRARIES})
 target_compile_definitions(ssdserving PRIVATE _exe)
 target_compile_definitions(spfresh PRIVATE _exe)
 target_compile_definitions(keyvaluetest PRIVATE _exe)
@@ -154,7 +147,7 @@ target_compile_definitions(usefultool PRIVATE _exe)
 
 # for Test
 add_library(ssdservingLib ${SSD_SERVING_HDR_FILES} ${SSD_SERVING_FILES})
-target_link_libraries(ssdservingLib SPTAGLibStatic ${Boost_LIBRARIES} ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} ${TBB_LIBRARIES} ${SPDK_LIBRARIES})
+target_link_libraries(ssdservingLib SPTAGLibStatic ${Boost_LIBRARIES} ${RocksDB_LIBRARIES} ${AEROSPIKE_LIBRARIES} ${uring_LIBRARIES} ${TBB_LIBRARIES} ${SPDK_LIBRARIES} ${TiKV_LIBRARIES})
 
 find_package(MPI)
 if (MPI_FOUND)

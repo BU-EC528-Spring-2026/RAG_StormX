@@ -234,7 +234,9 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
                                              int insertthread = 2,
                                              std::shared_ptr<COMMON::IQuantizer> quantizer = nullptr,
                                              std::string quantizerFilePath = "quantizer.bin",
-                                             std::string storageType = "FILEIO")
+                                             std::string storageType = "FILEIO",
+                                             std::string tikvPDAddresses = "",
+                                             std::string tikvKeyPrefix = "")
 {
     auto vecIndex = VectorIndex::CreateInstance(IndexAlgoType::SPANN, GetEnumValueType<T>());
     int maxthreads = std::thread::hardware_concurrency();
@@ -283,6 +285,10 @@ std::shared_ptr<VectorIndex> BuildLargeIndex(const std::string &outDirectory, st
                                 std::to_string(postingLimit) + R"(
             TmpDir=tmpdir
             Storage=)" + storageType +
+                                R"(
+            TiKVPDAddresses=)" + tikvPDAddresses +
+                                R"(
+            TiKVKeyPrefix=)" + tikvKeyPrefix +
                                 R"(
             SpdkBatchSize=64
             ExcludeHead=false
@@ -642,7 +648,8 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
                   int insertVectorCount, int deleteVectorCount, int batches, int topK, int numThreads, int numQueries,
                   const std::string &outputFile = "output.json", const bool rebuild = true, const int resume = -1,
                   const std::string &quantizerFilePath = std::string(""), int quantizedDim = 0,
-                  const std::string &storageType = "FILEIO")
+                  const std::string &storageType = "FILEIO", const std::string &tikvPDAddresses = "",
+                  const std::string &tikvKeyPrefix = "")
 {
     int oldM = M, oldK = K, oldN = N, oldQueries = queries;
     N = baseVectorCount;
@@ -743,14 +750,15 @@ void RunBenchmark(const std::string &vectorPath, const std::string &queryPath, c
             }
 
             index = BuildLargeIndex<uint8_t>(indexPath, pquanvecset, pmeta, pmetaidx, dist, numThreads, numThreads,
-                                             quantizer, quantizerFilePath, storageType);
+                                             quantizer, quantizerFilePath, storageType, tikvPDAddresses,
+                                             tikvKeyPrefix);
             BOOST_REQUIRE(index != nullptr);
             index->SetQuantizerADC(true);
         }
         else
         {
             index = BuildLargeIndex<T>(indexPath, pvecset, pmeta, pmetaidx, dist, numThreads, numThreads, nullptr,
-                                       "quantizer.bin", storageType);
+                                       "quantizer.bin", storageType, tikvPDAddresses, tikvKeyPrefix);
             BOOST_REQUIRE(index != nullptr);
         }
 
@@ -2033,6 +2041,8 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     bool rebuild = iniReader.GetParameter("Benchmark", "Rebuild", true);
     int resume = iniReader.GetParameter("Benchmark", "Resume", -1);
     std::string storageType = iniReader.GetParameter("Benchmark", "Storage", std::string("FILEIO"));
+    std::string tikvPDAddresses = iniReader.GetParameter("Benchmark", "TiKVPDAddresses", std::string("127.0.0.1:2379"));
+    std::string tikvKeyPrefix = iniReader.GetParameter("Benchmark", "TiKVKeyPrefix", std::string("spann"));
 
     BOOST_TEST_MESSAGE("=== Benchmark Configuration ===");
     BOOST_TEST_MESSAGE("Vector Path: " << vectorPath);
@@ -2046,6 +2056,11 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     BOOST_TEST_MESSAGE("Queries: " << numQueries);
     BOOST_TEST_MESSAGE("DistMethod: " << Helper::Convert::ConvertToString(distMethod));
     BOOST_TEST_MESSAGE("StorageType: " << storageType);
+    if (storageType == "TIKVIO")
+    {
+        BOOST_TEST_MESSAGE("TiKVPDAddresses: " << tikvPDAddresses);
+        BOOST_TEST_MESSAGE("TiKVKeyPrefix: " << tikvKeyPrefix);
+    }
     if (!quantizerFilePath.empty())
     {
         BOOST_TEST_MESSAGE("QuantizerFilePath: " << quantizerFilePath);
@@ -2062,19 +2077,22 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     {
         RunBenchmark<float>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                             insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries, outputFile,
-                            rebuild, resume, quantizerFilePath, quantizedDim, storageType);
+                            rebuild, resume, quantizerFilePath, quantizedDim, storageType, tikvPDAddresses,
+                            tikvKeyPrefix);
     }
     else if (valueType == VectorValueType::Int8)
     {
         RunBenchmark<std::int8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                                   insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
-                                  outputFile, rebuild, resume, quantizerFilePath, quantizedDim, storageType);
+                                  outputFile, rebuild, resume, quantizerFilePath, quantizedDim, storageType,
+                                  tikvPDAddresses, tikvKeyPrefix);
     }
     else if (valueType == VectorValueType::UInt8)
     {
         RunBenchmark<std::uint8_t>(vectorPath, queryPath, truthPath, distMethod, indexPath, dimension, baseVectorCount,
                                    insertVectorCount, deleteVectorCount, batchNum, topK, numThreads, numQueries,
-                                   outputFile, rebuild, resume, quantizerFilePath, quantizedDim, storageType);
+                                   outputFile, rebuild, resume, quantizerFilePath, quantizedDim, storageType,
+                                   tikvPDAddresses, tikvKeyPrefix);
     }
 
     // std::filesystem::remove_all(indexPath);

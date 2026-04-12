@@ -16,7 +16,6 @@
 #include "inc/Helper/AerospikeKeyValueIO.h"
 #include "inc/Helper/ConcurrentSet.h"
 #include "inc/Helper/KeyValueIO.h"
-#include "inc/Helper/TiKVKeyValueIO.h"
 #include "inc/Helper/VectorSetReader.h"
 #include <chrono>
 #include <climits>
@@ -61,6 +60,10 @@ extern "C" bool RocksDbIOUringEnable()
 {
     return true;
 }
+#endif
+
+#ifdef TIKV
+#include "ExtraTiKVController.h"
 #endif
 
 namespace SPTAG::SPANN
@@ -312,29 +315,16 @@ template <typename ValueType> class ExtraDynamicSearcher : public IExtraSearcher
 
         else if (p_opt.m_storage == Storage::TIKVIO)
         {
+#ifdef TIKV
             SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ExtraDynamicSearcher:UseTiKV\n");
-
-            std::string udsPath = "/tmp/sptag_tikv.sock";
-            size_t cacheMB = 1024;
-
-            if (const char *envPath = std::getenv("SPTAG_TIKV_UDS"))
-            {
-                udsPath = envPath;
-            }
-            if (const char *envCache = std::getenv("SPTAG_TIKV_CACHE_MB"))
-            {
-                try
-                {
-                    cacheMB = std::stoull(envCache);
-                }
-                catch (...)
-                {
-                    cacheMB = 1024;
-                }
-            }
-
-            size_t cacheBytes = cacheMB * 1024 * 1024;
-            db.reset(new Helper::TiKVKeyValueIO(udsPath, cacheBytes));
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info, "ExtraDynamicSearcher:PD addresses:%s, prefix:%s\n",
+                         p_opt.m_tikvPDAddresses.c_str(), p_opt.m_tikvKeyPrefix.c_str());
+            db.reset(new TiKVIO(p_opt.m_tikvPDAddresses, p_opt.m_tikvKeyPrefix));
+#else
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                         "ExtraDynamicSearcher:TiKV unsupported! Use -DTIKV=ON when doing cmake.\n");
+            return;
+#endif
         }
         else if (p_opt.m_storage == Storage::AEROSPIKEIO)
         {
