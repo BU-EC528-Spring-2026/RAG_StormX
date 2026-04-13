@@ -525,6 +525,7 @@ sudo apt-get install -y \
     cmake \
     apt-utils \
     docker.io \
+    docker-compose-v2 \
     pkg-config \
     libssl-dev \
     libaio-dev \
@@ -686,11 +687,12 @@ This section adds a local TiKV benchmark path that uses a **single NVMe device**
 - NVMe mounted at `/mnt/nvme`.
 - SPTAG already built with TiKV support (`-DTIKV=ON`).
 
-If `docker compose` is missing, install the compose plugin first:
+If `docker compose` is missing, install Compose v2 first:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y docker-compose-plugin
+# Ubuntu default repositories (recommended for this guide)
+sudo apt-get install -y docker-compose-v2
 docker compose version
 ```
 
@@ -741,11 +743,16 @@ sudo rm -f ~/RAG_StormX/perftest_vector.bin ~/RAG_StormX/perftest_meta.bin ~/RAG
 Use the TiKV benchmark config file in the `benchmarks/` directory:
 
 ```bash
-cd ~/RAG_StormX/SPTAG
-BENCHMARK_CONFIG=~/RAG_StormX/benchmarks/benchmark.tikv.nvme.ini \
-BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_tikv.json \
-./Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=message
+cd ~/RAG_StormX
+sudo docker run --rm --net=host \
+  -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.tikv.nvme.ini \
+  -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_tikv.json \
+  -v ~/RAG_StormX:/work \
+  -v /mnt/nvme:/mnt/nvme \
+  sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=message'
 ```
+
+If you compiled SPTAG natively on the host and have `~/RAG_StormX/SPTAG/Release/SPTAGTest`, you can also run the host binary directly.
 
 #### 4) Stop TiKV Cluster (After Benchmark)
 
@@ -975,11 +982,14 @@ NVME_ROOT=/mnt/nvme/tikv_shared ./start_tikv_shared_nvme.sh
 # Verify PD can see TiKV stores before running benchmark
 curl http://127.0.0.1:2379/pd/api/v1/stores
 
-# Run benchmark from SPTAG build directory
-cd ~/RAG_StormX/SPTAG
-BENCHMARK_CONFIG=~/RAG_StormX/benchmarks/benchmark.tikv.nvme.ini \
-BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_tikv.json \
-./Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=message
+# Run benchmark in the Docker image (works even when host has no ./Release/SPTAGTest)
+cd ~/RAG_StormX
+sudo docker run --rm --net=host \
+  -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.tikv.nvme.ini \
+  -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_tikv.json \
+  -v ~/RAG_StormX:/work \
+  -v /mnt/nvme:/mnt/nvme \
+  sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=message'
 
 # Stop TiKV cluster after run
 cd ~/RAG_StormX/benchmarks

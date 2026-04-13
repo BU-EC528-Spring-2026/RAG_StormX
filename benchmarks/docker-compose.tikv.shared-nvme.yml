@@ -11,7 +11,6 @@ services:
       - --advertise-client-urls=http://127.0.0.1:2379
       - --advertise-peer-urls=http://127.0.0.1:2380
       - --initial-cluster=pd0=http://127.0.0.1:2380,pd1=http://127.0.0.1:2480,pd2=http://127.0.0.1:2580
-      - --initial-cluster-state=new
       - --data-dir=/var/lib/pd
     volumes:
       - ${NVME_ROOT:-/mnt/nvme/tikv_shared}/pd0:/var/lib/pd
@@ -28,7 +27,6 @@ services:
       - --advertise-client-urls=http://127.0.0.1:2479
       - --advertise-peer-urls=http://127.0.0.1:2480
       - --initial-cluster=pd0=http://127.0.0.1:2380,pd1=http://127.0.0.1:2480,pd2=http://127.0.0.1:2580
-      - --initial-cluster-state=new
       - --data-dir=/var/lib/pd
     volumes:
       - ${NVME_ROOT:-/mnt/nvme/tikv_shared}/pd1:/var/lib/pd
@@ -45,7 +43,6 @@ services:
       - --advertise-client-urls=http://127.0.0.1:2579
       - --advertise-peer-urls=http://127.0.0.1:2580
       - --initial-cluster=pd0=http://127.0.0.1:2380,pd1=http://127.0.0.1:2480,pd2=http://127.0.0.1:2580
-      - --initial-cluster-state=new
       - --data-dir=/var/lib/pd
     volumes:
       - ${NVME_ROOT:-/mnt/nvme/tikv_shared}/pd2:/var/lib/pd
