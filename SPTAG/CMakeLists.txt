@@ -220,6 +220,29 @@ if (AEROSPIKE)
     find_library(AEROSPIKE_CLIENT_LIBRARY NAMES aerospike)
 
     if (AEROSPIKE_INCLUDE_DIR AND AEROSPIKE_CLIENT_LIBRARY)
+        # SPTAG's Aerospike UDF search path (AerospikeUDFMode = Packed | Pairs) requires the
+        # batch UDF apply entry point `aerospike_batch_apply`, which is available only in
+        # Aerospike C client >= 6.0 (paired with Aerospike server >= 6.0). Fail the
+        # configure step early if the installed client is too old so we do not fall back to
+        # N-round-trip serial UDF execution at runtime.
+        find_file(AEROSPIKE_BATCH_HEADER
+                  NAMES aerospike/aerospike_batch.h
+                  HINTS ${AEROSPIKE_INCLUDE_DIR})
+        if (NOT AEROSPIKE_BATCH_HEADER)
+            message(FATAL_ERROR
+                "Aerospike C client is missing <aerospike/aerospike_batch.h>. "
+                "The SPTAG UDF search path requires Aerospike C client >= 6.0 and "
+                "Aerospike server >= 6.0 (for aerospike_batch_apply).")
+        endif()
+        file(READ "${AEROSPIKE_BATCH_HEADER}" _as_batch_contents)
+        string(FIND "${_as_batch_contents}" "aerospike_batch_apply" _as_batch_apply_pos)
+        if (_as_batch_apply_pos EQUAL -1)
+            message(FATAL_ERROR
+                "Aerospike C client at '${AEROSPIKE_INCLUDE_DIR}' does not expose "
+                "aerospike_batch_apply. SPTAG UDF search requires Aerospike C client "
+                ">= 6.0 and Aerospike server >= 6.0.")
+        endif()
+        message(STATUS "Aerospike batch UDF support: aerospike_batch_apply found (client >= 6.0)")
         list(APPEND AEROSPIKE_LIBRARIES ${AEROSPIKE_CLIENT_LIBRARY} ssl crypto yaml z m pthread)
         add_definitions(-DAEROSPIKE)
         add_definitions(-DSPTAG_AEROSPIKE_DEFAULT_HOST="${AEROSPIKE_DEFAULT_HOST}")

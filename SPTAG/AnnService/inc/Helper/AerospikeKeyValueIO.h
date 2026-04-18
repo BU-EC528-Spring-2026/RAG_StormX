@@ -38,6 +38,30 @@ class AerospikeKeyValueIO final : public KeyValueIO
     ErrorCode MultiGet(const std::vector<SizeType> &keys, std::vector<SPTAG::Helper::PageBuffer<std::uint8_t>> &values,
                        const std::chrono::microseconds &timeout, std::vector<Helper::AsyncReadRequest> *reqs) override;
 
+    // Packed UDF mode: single aerospike_batch_apply call applies nearest_candidates_read on all
+    // posting keys; each per-key result is a concatenated blob of top-n vectorInfo records.
+    ErrorCode MultiGetNearest(
+        const std::vector<SizeType> &keys,
+        const void *query_blob, uint32_t query_size,
+        uint32_t vector_info_size, uint32_t meta_data_size,
+        uint32_t dimension, uint8_t value_type,
+        uint32_t top_n, uint8_t dist_mode,
+        const void *deleted_bitset, uint32_t deleted_bitset_size,
+        std::vector<PageBuffer<std::uint8_t>> &values,
+        const std::chrono::microseconds &timeout) override;
+
+    // Pairs UDF mode: single aerospike_batch_apply call applies nearest_candidates_pairs on all
+    // posting keys; each per-key result is a blob of 8-byte (VID:int32_le, dist:float32) pairs.
+    ErrorCode MultiGetNearestPairs(
+        const std::vector<SizeType> &keys,
+        const void *query_blob, uint32_t query_size,
+        uint32_t vector_info_size, uint32_t meta_data_size,
+        uint32_t dimension, uint8_t value_type,
+        uint32_t top_n, uint8_t dist_mode,
+        const void *deleted_bitset, uint32_t deleted_bitset_size,
+        std::vector<std::vector<NearestPair>> &pairs,
+        const std::chrono::microseconds &timeout) override;
+
     ErrorCode Put(const SizeType key, const std::string &value, const std::chrono::microseconds &timeout,
                   std::vector<Helper::AsyncReadRequest> *reqs) override;
 

@@ -575,6 +575,9 @@ The highlighted area in the image shows where to look for the "Internal IP" colu
 > [!IMPORTANT]
 > NOTE the `DAEROSPIKE_DEFAULT_HOST`, you should populate that with your own internal IP address.
 
+> [!IMPORTANT]
+> **Minimum Aerospike version:** the server-side UDF search path (`AerospikeUDFMode = Packed | Pairs`) requires **Aerospike server >= 6.0** and **Aerospike C client >= 6.0**, because it uses `aerospike_batch_apply` to dispatch the posting-filter UDF across all keys in a single network round-trip. The CMake configure step verifies that `aerospike/aerospike_batch.h` exports `aerospike_batch_apply`; older clients fail fast at configure time. If you are running an older deployment and cannot upgrade, keep `AerospikeUDFMode=0` (Off) and the legacy `MultiGet` path will be used.
+
 **Run inside the SPTAG Docker shell:**
 
 ```bash

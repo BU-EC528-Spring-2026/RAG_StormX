@@ -263,6 +263,33 @@ template <typename ValueType> class ExtraDynamicSearcher : public IExtraSearcher
     Helper::Concurrent::ConcurrentMap<SizeType, SizeType> m_mergeList;
     std::shared_timed_mutex m_mergeListLock;
 
+    // Build a compact deleted-VID bitset from m_versionMap for a single query.
+    // The bitset uses standard bit-packing: bit (VID % 8) of byte (VID / 8) is set
+    // when m_versionMap->Deleted(VID) is true.  The Lua is_deleted_by_bitset helper
+    // uses the same convention.
+    //
+    // Called once per SearchIndex invocation when UDF mode is Packed or Pairs; the
+    // resulting blob is forwarded to every posting key in the batch so the server can
+    // exclude dead vectors *before* they enter the top-n heap — avoiding the recall
+    // collapse that occurs when all top_n slots are occupied by deleted IDs.
+    std::vector<uint8_t> BuildDeletedBitset() const
+    {
+        if (m_versionMap == nullptr)
+            return {};
+        SizeType count = static_cast<SizeType>(m_versionMap->Count());
+        if (count <= 0)
+            return {};
+
+        size_t byte_count = (static_cast<size_t>(count) + 7) / 8;
+        std::vector<uint8_t> bitset(byte_count, 0);
+        for (SizeType vid = 0; vid < count; ++vid)
+        {
+            if (m_versionMap->Deleted(vid))
+                bitset[static_cast<size_t>(vid) / 8] |= static_cast<uint8_t>(1u << (vid % 8));
+        }
+        return bitset;
+    }
+
   public:
     ExtraDynamicSearcher(SPANN::Options &p_opt)
     {
@@ -2317,16 +2344,218 @@ template <typename ValueType> class ExtraDynamicSearcher : public IExtraSearcher
         else
             remainLimit = m_hardLatencyLimit;
 
-        auto readStart = std::chrono::high_resolution_clock::now();
-        if (db->MultiGet(p_exWorkSpace->m_postingIDs, p_exWorkSpace->m_pageBuffers, remainLimit,
-                         &(p_exWorkSpace->m_diskRequests)) != ErrorCode::Success ||
-            !ValidatePostings(p_exWorkSpace->m_postingIDs, p_exWorkSpace->m_pageBuffers))
+        // ---------------------------------------------------------------
+        // PQ guard: determine effective UDF mode for this query.
+        //
+        // Pairs mode trusts Lua float distances as final scores; this is
+        // mathematically unsound when a PQ quantizer is active because Lua
+        // computes raw L2 on code bytes (≠ ADC).  Clamp Pairs→Off or Packed
+        // depending on m_aerospikeUDFAllowPackedWithPQ.  When Packed is
+        // allowed with PQ it acts only as a coarse pre-filter; the client
+        // still runs ComputeDistance / ADC on the returned packed records so
+        // Lua distances are discarded for ranking.
+        // ---------------------------------------------------------------
+        AerospikeUDFMode effectiveMode = static_cast<AerospikeUDFMode>(m_opt->m_aerospikeUDFMode);
+
+        // A/B testing hook: env var SPTAG_AEROSPIKE_UDF_MODE overrides the configured
+        // mode at runtime (0=Off, 1=Packed, 2=Pairs) so benchmark harnesses can
+        // iterate modes without regenerating the ini template. PQ guard below still
+        // applies after this override. SPTAG_AEROSPIKE_UDF_TOPN / _ALLOW_PACKED_PQ
+        // provide the same escape hatch for the other two UDF options.
+        if (const char *modeEnv = std::getenv("SPTAG_AEROSPIKE_UDF_MODE"))
         {
-            SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[SearchIndex] read postings fail!\n");
-            return ErrorCode::DiskIOFail;
+            int v = std::atoi(modeEnv);
+            if (v >= 0 && v <= 2)
+                effectiveMode = static_cast<AerospikeUDFMode>(v);
         }
-        auto readEnd = std::chrono::high_resolution_clock::now();
-        readLatency += ((double)std::chrono::duration_cast<std::chrono::microseconds>(readEnd - readStart).count());
+        if (const char *topNEnv = std::getenv("SPTAG_AEROSPIKE_UDF_TOPN"))
+        {
+            int v = std::atoi(topNEnv);
+            if (v > 0) m_opt->m_searchPostingTopN = v;
+        }
+        if (const char *allowEnv = std::getenv("SPTAG_AEROSPIKE_UDF_ALLOW_PACKED_PQ"))
+        {
+            m_opt->m_aerospikeUDFAllowPackedWithPQ =
+                (allowEnv[0] == '1' || allowEnv[0] == 't' || allowEnv[0] == 'T');
+        }
+
+        if (p_index->m_pQuantizer != nullptr)
+        {
+            if (effectiveMode == AerospikeUDFMode::Pairs)
+            {
+                effectiveMode = m_opt->m_aerospikeUDFAllowPackedWithPQ
+                                    ? AerospikeUDFMode::Packed
+                                    : AerospikeUDFMode::Off;
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                             "[SearchIndex] Pairs mode disabled: PQ quantizer is active. "
+                             "Falling back to %s.\n",
+                             effectiveMode == AerospikeUDFMode::Packed ? "Packed" : "Off");
+            }
+            else if (effectiveMode == AerospikeUDFMode::Packed &&
+                     !m_opt->m_aerospikeUDFAllowPackedWithPQ)
+            {
+                effectiveMode = AerospikeUDFMode::Off;
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                             "[SearchIndex] Packed mode disabled: PQ quantizer is active and "
+                             "AerospikeUDFAllowPackedWithPQ=false.\n");
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Pairs UDF path — server returns (VID, float32 dist) per posting.
+        // Client pushes directly into QueryResultSet, skipping ComputeDistance.
+        // deleted_bitset is built once and forwarded so Lua filters dead VIDs
+        // before they occupy top-n slots (prevents recall collapse).
+        // ---------------------------------------------------------------
+        if (effectiveMode == AerospikeUDFMode::Pairs)
+        {
+            std::vector<uint8_t> deletedBitset = BuildDeletedBitset();
+
+            // Dimension / value-type: use stored representation, not the
+            // reconstructed query space.  For non-PQ (the only valid Pairs case)
+            // these match the raw vector space.
+            const uint32_t dim =
+                static_cast<uint32_t>((m_vectorInfoSize - m_metaDataSize) / sizeof(ValueType));
+            const uint8_t vtype = static_cast<uint8_t>(m_opt->m_valueType);
+            const uint8_t dmode =
+                (m_opt->m_distCalcMethod == DistCalcMethod::Cosine) ? 1 : 0;
+            const void *queryPtr  = queryResults.GetQuantizedTarget();
+            const uint32_t qsize  = dim * static_cast<uint32_t>(sizeof(ValueType));
+
+            std::vector<std::vector<Helper::KeyValueIO::NearestPair>> pairsPerPosting;
+
+            auto readStart = std::chrono::high_resolution_clock::now();
+            ErrorCode pairsRet = db->MultiGetNearestPairs(
+                p_exWorkSpace->m_postingIDs,
+                queryPtr, qsize,
+                static_cast<uint32_t>(m_vectorInfoSize),
+                static_cast<uint32_t>(m_metaDataSize),
+                dim, vtype,
+                static_cast<uint32_t>(m_opt->m_searchPostingTopN),
+                dmode,
+                deletedBitset.empty() ? nullptr : deletedBitset.data(),
+                static_cast<uint32_t>(deletedBitset.size()),
+                pairsPerPosting,
+                remainLimit);
+
+            if (pairsRet != ErrorCode::Success)
+            {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                             "[SearchIndex] MultiGetNearestPairs failed; falling back to MultiGet.\n");
+                // Fall through to the standard path below.
+                effectiveMode = AerospikeUDFMode::Off;
+            }
+            else
+            {
+                auto readEnd = std::chrono::high_resolution_clock::now();
+                readLatency += static_cast<double>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(readEnd - readStart).count());
+
+                for (auto &postPairs : pairsPerPosting)
+                {
+                    listElements += static_cast<int>(postPairs.size());
+                    for (auto &np : postPairs)
+                    {
+                        // Dedup: same contract as the standard path.
+                        if (p_exWorkSpace->m_deduper.CheckAndSet(np.vid))
+                        {
+                            listElements--;
+                            continue;
+                        }
+                        // Defense-in-depth: drop any VID that is still marked
+                        // deleted on the client (should be rare when bitset is
+                        // up-to-date, but guards against races during bulk deletes).
+                        if (m_versionMap->Deleted(np.vid))
+                        {
+                            listElements--;
+                            continue;
+                        }
+                        queryResults.AddPoint(np.vid, np.dist);
+                    }
+                }
+
+                if (p_stats)
+                {
+                    p_stats->m_compLatency     = 0;
+                    p_stats->m_diskReadLatency = readLatency / 1000;
+                    p_stats->m_totalListElementsCount = listElements;
+                    p_stats->m_diskIOCount     = 0;
+                    p_stats->m_diskAccessCount = 0;
+                }
+                queryResults.SetScanned(listElements);
+                return ErrorCode::Success;
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Packed UDF path — server returns top-n vectorInfo records per
+        // posting.  Client re-runs ComputeDistance (SIMD) for accuracy.
+        // When PQ is active, Packed acts as a coarse pre-filter only; Lua
+        // L2 on code bytes is discarded and full ADC runs below.
+        // ---------------------------------------------------------------
+        bool packedUDFUsed = false;
+        if (effectiveMode == AerospikeUDFMode::Packed)
+        {
+            std::vector<uint8_t> deletedBitset = BuildDeletedBitset();
+
+            const uint32_t dim =
+                static_cast<uint32_t>((m_vectorInfoSize - m_metaDataSize) / sizeof(ValueType));
+            const uint8_t vtype = static_cast<uint8_t>(m_opt->m_valueType);
+            const uint8_t dmode =
+                (m_opt->m_distCalcMethod == DistCalcMethod::Cosine) ? 1 : 0;
+            const void *queryPtr  = queryResults.GetQuantizedTarget();
+            const uint32_t qsize  = dim * static_cast<uint32_t>(sizeof(ValueType));
+
+            auto readStart = std::chrono::high_resolution_clock::now();
+            ErrorCode packedRet = db->MultiGetNearest(
+                p_exWorkSpace->m_postingIDs,
+                queryPtr, qsize,
+                static_cast<uint32_t>(m_vectorInfoSize),
+                static_cast<uint32_t>(m_metaDataSize),
+                dim, vtype,
+                static_cast<uint32_t>(m_opt->m_searchPostingTopN),
+                dmode,
+                deletedBitset.empty() ? nullptr : deletedBitset.data(),
+                static_cast<uint32_t>(deletedBitset.size()),
+                p_exWorkSpace->m_pageBuffers,
+                remainLimit);
+
+            if (packedRet == ErrorCode::Success &&
+                ValidatePostings(p_exWorkSpace->m_postingIDs, p_exWorkSpace->m_pageBuffers))
+            {
+                auto readEnd = std::chrono::high_resolution_clock::now();
+                readLatency += static_cast<double>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(readEnd - readStart).count());
+                packedUDFUsed = true;
+            }
+            else
+            {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                             "[SearchIndex] MultiGetNearest failed or validation failed; "
+                             "falling back to MultiGet.\n");
+                // Fall through to standard MultiGet below.
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Standard path (Off mode, or fallback from failed UDF calls).
+        // For Packed mode that succeeded we skip directly to the distance
+        // loop because m_pageBuffers is already populated by the UDF path.
+        // ---------------------------------------------------------------
+        if (!packedUDFUsed)
+        {
+            auto readStart = std::chrono::high_resolution_clock::now();
+            if (db->MultiGet(p_exWorkSpace->m_postingIDs, p_exWorkSpace->m_pageBuffers, remainLimit,
+                             &(p_exWorkSpace->m_diskRequests)) != ErrorCode::Success ||
+                !ValidatePostings(p_exWorkSpace->m_postingIDs, p_exWorkSpace->m_pageBuffers))
+            {
+                SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "[SearchIndex] read postings fail!\n");
+                return ErrorCode::DiskIOFail;
+            }
+            auto readEnd = std::chrono::high_resolution_clock::now();
+            readLatency += static_cast<double>(
+                std::chrono::duration_cast<std::chrono::microseconds>(readEnd - readStart).count());
+        }
 
         const auto postingListCount = static_cast<uint32_t>(p_exWorkSpace->m_postingIDs.size());
         for (uint32_t pi = 0; pi < postingListCount; ++pi)

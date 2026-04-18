@@ -1,4 +1,5 @@
 #include "inc/Helper/AerospikeKeyValueIO.h"
+#include "inc/Helper/SptagPostingLuaEmbed.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -10,14 +11,20 @@
 #ifdef AEROSPIKE
 #include <aerospike/aerospike_batch.h>
 #include <aerospike/aerospike_key.h>
+#include <aerospike/aerospike_udf.h>
+#include <aerospike/as_arraylist.h>
 #include <aerospike/as_batch.h>
 #include <aerospike/as_bytes.h>
 #include <aerospike/as_error.h>
 #include <aerospike/as_key.h>
+#include <aerospike/as_list.h>
+#include <aerospike/as_nil.h>
 #include <aerospike/as_operations.h>
 #include <aerospike/as_policy.h>
 #include <aerospike/as_record.h>
 #include <aerospike/as_status.h>
+#include <aerospike/as_udf.h>
+#include <aerospike/as_val.h>
 #endif
 
 namespace SPTAG::Helper
@@ -88,6 +95,182 @@ bool BatchReadCallback(const as_batch_read *results, uint32_t n, void *udata)
     ctx->status = ErrorCode::Success;
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// Batch-apply UDF helpers
+// ---------------------------------------------------------------------------
+
+// Extract the UDF return bytes from a batch-apply result record.
+// aerospike_batch_apply stores the Lua return value under the "SUCCESS" bin.
+// If not found there (older client convention), fall back to the first bin.
+static const as_bytes *ExtractUDFResultBytes(const as_record *rec)
+{
+    if (rec == nullptr)
+        return nullptr;
+
+    const as_bytes *b = as_record_get_bytes(rec, "SUCCESS");
+    if (b != nullptr)
+        return b;
+
+    // Fallback: iterate bins for the first as_bytes value.
+    for (uint16_t i = 0; i < rec->bins.size; ++i)
+    {
+        const as_bin *bin = &rec->bins.entries[i];
+        if (bin->valuep != nullptr && as_val_type((const as_val *)bin->valuep) == AS_BYTES)
+            return reinterpret_cast<const as_bytes *>(bin->valuep);
+    }
+    return nullptr;
+}
+
+// Context for the packed-mode batch-apply callback.
+struct BatchApplyPackedContext
+{
+    std::vector<SPTAG::Helper::PageBuffer<std::uint8_t>> *values;
+    ErrorCode status;
+};
+
+// Called once per batch with all per-key UDF results.
+// Fills values[i] from the blob returned by nearest_candidates_read.
+bool BatchApplyPackedCallback(const as_batch_read *results, uint32_t n, void *udata)
+{
+    auto *ctx = reinterpret_cast<BatchApplyPackedContext *>(udata);
+    if (ctx == nullptr || ctx->values == nullptr)
+        return false;
+
+    if (ctx->values->size() < n)
+        ctx->values->resize(n);
+
+    bool any_fail = false;
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        if (results[i].result != AEROSPIKE_OK)
+        {
+            // Partial failure: leave the slot empty and continue; caller decides.
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                         "BatchApplyPackedCallback: UDF failed for slot %u: code=%d\n",
+                         i, static_cast<int>(results[i].result));
+            (*ctx->values)[i].SetAvailableSize(0);
+            any_fail = true;
+            continue;
+        }
+
+        const as_bytes *result_bytes = ExtractUDFResultBytes(&results[i].record);
+        if (result_bytes == nullptr)
+        {
+            // UDF returned nil/empty — treat as empty posting (not a hard error).
+            (*ctx->values)[i].SetAvailableSize(0);
+            continue;
+        }
+
+        uint32_t sz = result_bytes->size;
+        const uint8_t *raw = as_bytes_get(result_bytes);
+        (*ctx->values)[i].ReservePageBuffer(sz);
+        if (sz > 0 && raw != nullptr)
+            std::memcpy((*ctx->values)[i].GetBuffer(), raw, sz);
+        (*ctx->values)[i].SetAvailableSize(sz);
+    }
+
+    ctx->status = any_fail ? ErrorCode::Fail : ErrorCode::Success;
+    return true;
+}
+
+// Context for the pairs-mode batch-apply callback.
+struct BatchApplyPairsContext
+{
+    std::vector<std::vector<SPTAG::Helper::KeyValueIO::NearestPair>> *pairs;
+    ErrorCode status;
+};
+
+// Called once per batch with all per-key UDF results.
+// Parses the 8-byte (VID:int32_le, dist:float32_le) records from nearest_candidates_pairs.
+bool BatchApplyPairsCallback(const as_batch_read *results, uint32_t n, void *udata)
+{
+    static_assert(sizeof(SPTAG::Helper::KeyValueIO::NearestPair) == 8,
+                  "NearestPair layout must be exactly 8 bytes");
+
+    auto *ctx = reinterpret_cast<BatchApplyPairsContext *>(udata);
+    if (ctx == nullptr || ctx->pairs == nullptr)
+        return false;
+
+    if (ctx->pairs->size() < n)
+        ctx->pairs->resize(n);
+
+    bool any_fail = false;
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        (*ctx->pairs)[i].clear();
+
+        if (results[i].result != AEROSPIKE_OK)
+        {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                         "BatchApplyPairsCallback: UDF failed for slot %u: code=%d\n",
+                         i, static_cast<int>(results[i].result));
+            any_fail = true;
+            continue;
+        }
+
+        const as_bytes *result_bytes = ExtractUDFResultBytes(&results[i].record);
+        if (result_bytes == nullptr || result_bytes->size == 0)
+            continue;
+
+        const uint8_t *raw = as_bytes_get(result_bytes);
+        uint32_t sz = result_bytes->size;
+        if (raw == nullptr || sz % 8 != 0)
+        {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                         "BatchApplyPairsCallback: unexpected blob size %u for slot %u (expected multiple of 8)\n",
+                         sz, i);
+            any_fail = true;
+            continue;
+        }
+
+        uint32_t pair_count = sz / 8;
+        (*ctx->pairs)[i].resize(pair_count);
+        // Each pair is laid out as [VID:int32_le | dist:float32_le].
+        // memcpy is safe because NearestPair is a trivial struct with matching layout.
+        std::memcpy((*ctx->pairs)[i].data(), raw, sz);
+    }
+
+    ctx->status = any_fail ? ErrorCode::Fail : ErrorCode::Success;
+    return true;
+}
+
+// Build and populate an as_arraylist with the UDF arguments shared by both UDF functions:
+//   bin_name, query_blob, vector_info_size, meta_data_size, dimension,
+//   value_type, top_n, dist_mode, deleted_bitset
+//
+// Ownership of the allocated as_bytes objects is transferred to the list; call
+// as_arraylist_destroy() to release everything.
+static void BuildUDFArglist(as_arraylist *args,
+                            const std::string &bin_name,
+                            const void *query_blob, uint32_t query_size,
+                            uint32_t vector_info_size, uint32_t meta_data_size,
+                            uint32_t dimension, uint8_t value_type,
+                            uint32_t top_n, uint8_t dist_mode,
+                            const void *deleted_bitset, uint32_t deleted_bitset_size)
+{
+    as_arraylist_append_str(args, bin_name.c_str());
+
+    // query_blob as as_bytes (heap copy — arraylist takes ownership via as_val_destroy)
+    as_bytes *qb = as_bytes_new(query_size);
+    if (query_size > 0 && query_blob != nullptr)
+        as_bytes_set(qb, 0, reinterpret_cast<const uint8_t *>(query_blob), query_size);
+    as_arraylist_append_bytes(args, qb);
+
+    as_arraylist_append_int64(args, static_cast<int64_t>(vector_info_size));
+    as_arraylist_append_int64(args, static_cast<int64_t>(meta_data_size));
+    as_arraylist_append_int64(args, static_cast<int64_t>(dimension));
+    as_arraylist_append_int64(args, static_cast<int64_t>(value_type));
+    as_arraylist_append_int64(args, static_cast<int64_t>(top_n));
+    as_arraylist_append_int64(args, static_cast<int64_t>(dist_mode));
+
+    // deleted_bitset: always pass as bytes (never nil) so Lua can safely call bytes.size().
+    as_bytes *db = as_bytes_new(deleted_bitset_size);
+    if (deleted_bitset_size > 0 && deleted_bitset != nullptr)
+        as_bytes_set(db, 0, reinterpret_cast<const uint8_t *>(deleted_bitset), deleted_bitset_size);
+    as_arraylist_append_bytes(args, db);
+}
+
 } // namespace
 #endif
 
@@ -125,6 +308,35 @@ AerospikeKeyValueIO::AerospikeKeyValueIO(const std::string &host, uint16_t port,
     if (aerospike_connect(&m_as, &err) == AEROSPIKE_OK)
     {
         m_connected = true;
+
+        // Idempotently register the sptag_posting Lua UDF module so that
+        // nearest_candidates_read / nearest_candidates_pairs are available
+        // without a separate out-of-band deployment step.
+        as_bytes lua_content;
+        as_bytes_init_wrap(&lua_content,
+                           const_cast<uint8_t *>(
+                               reinterpret_cast<const uint8_t *>(kSptagPostingLua)),
+                           static_cast<uint32_t>(kSptagPostingLuaSize),
+                           false /* don't free static storage */);
+        as_error udf_err{};
+        as_status udf_status = aerospike_udf_put(&m_as, &udf_err, nullptr,
+                                                  "sptag_posting.lua",
+                                                  AS_UDF_TYPE_LUA, &lua_content);
+        if (udf_status != AEROSPIKE_OK)
+        {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                         "Aerospike UDF register failed (sptag_posting.lua): host=%s port=%u code=%d message=%s\n",
+                         m_host.c_str(), m_port, udf_err.code, udf_err.message);
+            fprintf(stderr,
+                    "Aerospike UDF register failed (sptag_posting.lua): host=%s port=%u code=%d message=%s\n",
+                    m_host.c_str(), m_port, udf_err.code, udf_err.message);
+        }
+        else
+        {
+            SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
+                         "Aerospike UDF sptag_posting.lua registered: host=%s port=%u\n",
+                         m_host.c_str(), m_port);
+        }
     }
     else
     {
@@ -482,6 +694,187 @@ ErrorCode AerospikeKeyValueIO::Delete(SizeType key)
     return ErrorCode::Fail;
 #else
     (void)key;
+    return ErrorCode::Fail;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// MultiGetNearest  —  packed UDF mode
+// ---------------------------------------------------------------------------
+ErrorCode AerospikeKeyValueIO::MultiGetNearest(
+    const std::vector<SizeType> &keys,
+    const void *query_blob, uint32_t query_size,
+    uint32_t vector_info_size, uint32_t meta_data_size,
+    uint32_t dimension, uint8_t value_type,
+    uint32_t top_n, uint8_t dist_mode,
+    const void *deleted_bitset, uint32_t deleted_bitset_size,
+    std::vector<PageBuffer<std::uint8_t>> &values,
+    const std::chrono::microseconds &timeout)
+{
+    if (!m_connected)
+        return ErrorCode::Fail;
+
+    if (keys.empty())
+    {
+        values.clear();
+        return ErrorCode::Success;
+    }
+
+#ifdef AEROSPIKE
+    // Pre-size output so the callback can index by slot.
+    if (values.size() < keys.size())
+        values.resize(keys.size());
+
+    // Build batch: one key per posting.
+    as_batch batch;
+    as_batch_inita(&batch, static_cast<uint32_t>(keys.size()));
+    for (uint32_t i = 0; i < static_cast<uint32_t>(keys.size()); ++i)
+        as_key_init_int64(as_batch_keyat(&batch, i), m_namespace.c_str(), m_setName.c_str(),
+                          static_cast<int64_t>(keys[i]));
+
+    // UDF argument list — same for every key in the batch.
+    as_arraylist args;
+    as_arraylist_inita(&args, 9);
+    BuildUDFArglist(&args, m_valueBin,
+                    query_blob, query_size,
+                    vector_info_size, meta_data_size,
+                    dimension, value_type,
+                    top_n, dist_mode,
+                    deleted_bitset, deleted_bitset_size);
+
+    as_error err{};
+    as_policy_batch batch_policy;
+    as_policy_batch_init(&batch_policy);
+    uint32_t timeout_ms = static_cast<uint32_t>(ToMilliseconds(timeout).count());
+    batch_policy.base.total_timeout = timeout_ms;
+    batch_policy.base.socket_timeout = timeout_ms;
+
+    as_policy_batch_apply apply_policy;
+    as_policy_batch_apply_init(&apply_policy);
+
+    BatchApplyPackedContext ctx{&values, ErrorCode::Success};
+    as_status status = aerospike_batch_apply(
+        &m_as, &err, &batch_policy, &apply_policy, &batch,
+        "sptag_posting", "nearest_candidates_read",
+        reinterpret_cast<as_list *>(&args),
+        BatchApplyPackedCallback, &ctx);
+
+    as_arraylist_destroy(&args);
+    as_batch_destroy(&batch);
+
+    if (status != AEROSPIKE_OK)
+    {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                     "Aerospike MultiGetNearest (batch_apply) failed: keys=%u host=%s port=%u "
+                     "namespace=%s set=%s bin=%s status=%d code=%d message=%s\n",
+                     static_cast<uint32_t>(keys.size()), m_host.c_str(), m_port,
+                     m_namespace.c_str(), m_setName.c_str(), m_valueBin.c_str(),
+                     status, err.code, err.message);
+        fprintf(stderr,
+                "Aerospike MultiGetNearest (batch_apply) failed: keys=%u host=%s port=%u "
+                "namespace=%s set=%s bin=%s status=%d code=%d message=%s\n",
+                static_cast<uint32_t>(keys.size()), m_host.c_str(), m_port,
+                m_namespace.c_str(), m_setName.c_str(), m_valueBin.c_str(),
+                status, err.code, err.message);
+        return ErrorCode::Fail;
+    }
+    return ctx.status;
+#else
+    (void)keys; (void)query_blob; (void)query_size;
+    (void)vector_info_size; (void)meta_data_size;
+    (void)dimension; (void)value_type;
+    (void)top_n; (void)dist_mode;
+    (void)deleted_bitset; (void)deleted_bitset_size;
+    (void)values; (void)timeout;
+    return ErrorCode::Fail;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// MultiGetNearestPairs  —  pairs UDF mode
+// ---------------------------------------------------------------------------
+ErrorCode AerospikeKeyValueIO::MultiGetNearestPairs(
+    const std::vector<SizeType> &keys,
+    const void *query_blob, uint32_t query_size,
+    uint32_t vector_info_size, uint32_t meta_data_size,
+    uint32_t dimension, uint8_t value_type,
+    uint32_t top_n, uint8_t dist_mode,
+    const void *deleted_bitset, uint32_t deleted_bitset_size,
+    std::vector<std::vector<NearestPair>> &pairs,
+    const std::chrono::microseconds &timeout)
+{
+    if (!m_connected)
+        return ErrorCode::Fail;
+
+    if (keys.empty())
+    {
+        pairs.clear();
+        return ErrorCode::Success;
+    }
+
+#ifdef AEROSPIKE
+    if (pairs.size() < keys.size())
+        pairs.resize(keys.size());
+
+    as_batch batch;
+    as_batch_inita(&batch, static_cast<uint32_t>(keys.size()));
+    for (uint32_t i = 0; i < static_cast<uint32_t>(keys.size()); ++i)
+        as_key_init_int64(as_batch_keyat(&batch, i), m_namespace.c_str(), m_setName.c_str(),
+                          static_cast<int64_t>(keys[i]));
+
+    as_arraylist args;
+    as_arraylist_inita(&args, 9);
+    BuildUDFArglist(&args, m_valueBin,
+                    query_blob, query_size,
+                    vector_info_size, meta_data_size,
+                    dimension, value_type,
+                    top_n, dist_mode,
+                    deleted_bitset, deleted_bitset_size);
+
+    as_error err{};
+    as_policy_batch batch_policy;
+    as_policy_batch_init(&batch_policy);
+    uint32_t timeout_ms = static_cast<uint32_t>(ToMilliseconds(timeout).count());
+    batch_policy.base.total_timeout = timeout_ms;
+    batch_policy.base.socket_timeout = timeout_ms;
+
+    as_policy_batch_apply apply_policy;
+    as_policy_batch_apply_init(&apply_policy);
+
+    BatchApplyPairsContext ctx{&pairs, ErrorCode::Success};
+    as_status status = aerospike_batch_apply(
+        &m_as, &err, &batch_policy, &apply_policy, &batch,
+        "sptag_posting", "nearest_candidates_pairs",
+        reinterpret_cast<as_list *>(&args),
+        BatchApplyPairsCallback, &ctx);
+
+    as_arraylist_destroy(&args);
+    as_batch_destroy(&batch);
+
+    if (status != AEROSPIKE_OK)
+    {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Error,
+                     "Aerospike MultiGetNearestPairs (batch_apply) failed: keys=%u host=%s port=%u "
+                     "namespace=%s set=%s bin=%s status=%d code=%d message=%s\n",
+                     static_cast<uint32_t>(keys.size()), m_host.c_str(), m_port,
+                     m_namespace.c_str(), m_setName.c_str(), m_valueBin.c_str(),
+                     status, err.code, err.message);
+        fprintf(stderr,
+                "Aerospike MultiGetNearestPairs (batch_apply) failed: keys=%u host=%s port=%u "
+                "namespace=%s set=%s bin=%s status=%d code=%d message=%s\n",
+                static_cast<uint32_t>(keys.size()), m_host.c_str(), m_port,
+                m_namespace.c_str(), m_setName.c_str(), m_valueBin.c_str(),
+                status, err.code, err.message);
+        return ErrorCode::Fail;
+    }
+    return ctx.status;
+#else
+    (void)keys; (void)query_blob; (void)query_size;
+    (void)vector_info_size; (void)meta_data_size;
+    (void)dimension; (void)value_type;
+    (void)top_n; (void)dist_mode;
+    (void)deleted_bitset; (void)deleted_bitset_size;
+    (void)pairs; (void)timeout;
     return ErrorCode::Fail;
 #endif
 }

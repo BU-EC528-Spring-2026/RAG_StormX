@@ -215,4 +215,11 @@ DefineSSDParameter(m_centeringToZero, bool, false, "CenteringToZero")
 // Iterative
 DefineSSDParameter(m_headBatch, int, 32, "IterativeSearchHeadBatch") // Mutable
 
+// Aerospike UDF search mode: 0=Off, 1=Packed, 2=Pairs (stored as uint8_t; cast to AerospikeUDFMode)
+DefineSSDParameter(m_aerospikeUDFMode, uint8_t, 0, "AerospikeUDFMode") // Mutable
+// Per-posting candidate limit returned by the UDF (Packed/Pairs modes)
+DefineSSDParameter(m_searchPostingTopN, int, 32, "SearchPostingTopN") // Mutable
+// Allow Packed UDF pre-filter when PQ quantizer is active (Pairs still forbidden)
+DefineSSDParameter(m_aerospikeUDFAllowPackedWithPQ, bool, false, "AerospikeUDFAllowPackedWithPQ") // Mutable
+
 #endif

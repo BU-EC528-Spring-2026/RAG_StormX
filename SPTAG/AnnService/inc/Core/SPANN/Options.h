@@ -12,6 +12,16 @@
 namespace SPTAG {
     namespace SPANN {
 
+        // Controls server-side UDF pre-filtering of posting lists via Aerospike batch apply.
+        // Off    — unchanged client-side MultiGet + full distance loop (default).
+        // Packed — UDF returns top-n vectorInfo records; client re-runs ComputeDistance.
+        //          May be used with PQ when m_aerospikeUDFAllowPackedWithPQ=true (coarse
+        //          pre-filter only; Lua L2 on PQ codes ≠ true ADC distance).
+        // Pairs  — UDF returns top-n (VID, float32 distance) pairs; client skips
+        //          ComputeDistance entirely. MUST NOT be used when a PQ quantizer is active
+        //          (enforced at runtime; clamped to Off or Packed automatically).
+        enum class AerospikeUDFMode : uint8_t { Off = 0, Packed = 1, Pairs = 2 };
+
         class Options
         {
         public:
@@ -196,6 +206,16 @@ namespace SPTAG {
             int m_headBatch;
             int m_asyncAppendQueueSize;
             bool m_allowZeroReplica;
+
+            // Aerospike UDF search mode (stored as uint8_t for ini serialization;
+            // cast to AerospikeUDFMode at runtime: 0=Off, 1=Packed, 2=Pairs).
+            uint8_t m_aerospikeUDFMode;
+            int m_searchPostingTopN;
+            // If true, Packed mode is allowed even when a PQ quantizer is active.
+            // Lua distances are then used only as a coarse pre-filter; the client
+            // still runs full ComputeDistance / ADC on returned packed records.
+            // Pairs mode remains forbidden regardless of this flag when PQ is active.
+            bool m_aerospikeUDFAllowPackedWithPQ;
 
             Options() {
 #define DefineBasicParameter(VarName, VarType, DefaultValue, RepresentStr) \
