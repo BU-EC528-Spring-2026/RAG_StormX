@@ -11,3 +11,11 @@ truth
 *.bvecs
 *.ivecs
 datasets/
+.cursor/
+*.L2
+*.Cosine
+*.csv
+/results/
+/testindices*/
+/tmp_*/
+/original_index/
