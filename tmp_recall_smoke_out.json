@@ -1,0 +1,91 @@
+{
+  "timestamp": "2026-04-13T17:12:21",
+  "config": {
+    "vectorPath": "/home/Zhakh/RAG_StormX/perftest_vector.bin",
+    "queryPath": "/home/Zhakh/RAG_StormX/perftest_query.bin",
+    "truthPath": "truth",
+    "indexPath": "/home/Zhakh/RAG_StormX/tmp_recall_smoke_idx",
+    "quantizerPath": "",
+    "ValueType": "UInt8",
+    "dimension": 128,
+    "baseVectorCount": 5000,
+    "insertVectorCount": 4000,
+    "DeleteVectorCount": 0,
+    "BatchNum": 2,
+    "topK": 10,
+    "numQueries": 200,
+    "numThreads": 4,
+    "DistMethod": "L2"
+  },
+  "results": {
+    "build timeSeconds": 47.1689,
+    "benchmark0_query_before_insert": {
+      "numQueries": 200,
+      "meanLatency": 452.7024,
+      "p50": 460.7750,
+      "p90": 490.5460,
+      "p95": 496.9410,
+      "p99": 513.4780,
+      "minLatency": 197.5630,
+      "maxLatency": 513.7520,
+      "qps": 8.7635,
+      "recall": {
+        "recallAtK": 0.0460,
+        "k": 10,
+        "numQueries": 200
+      }
+    },
+    "benchmark1_insert": {
+      "batch_1": {
+        "Load timeSeconds": 0.0217,
+        "Load vectorCount": 100000,
+        "Clone timeSeconds": 1.1844,
+        "inserted": 2000,
+        "insert timeSeconds": 3.6269,
+        "insert throughput": 551.4318,
+        "search":    {
+          "numQueries": 200,
+          "meanLatency": 467.0873,
+          "p50": 476.5380,
+          "p90": 509.1080,
+          "p95": 516.3090,
+          "p99": 530.9690,
+          "minLatency": 211.0920,
+          "maxLatency": 533.6030,
+          "qps": 8.4938,
+          "recall": {
+            "recallAtK": 0.0625,
+            "k": 10,
+            "numQueries": 200
+          }
+        },
+        "save timeSeconds": 0.2665
+      },
+      "batch_2": {
+        "Load timeSeconds": 0.0222,
+        "Load vectorCount": 102000,
+        "Clone timeSeconds": 1.7193,
+        "inserted": 2000,
+        "insert timeSeconds": 8.8157,
+        "insert throughput": 226.8689,
+        "search":    {
+          "numQueries": 200,
+          "meanLatency": 489.7216,
+          "p50": 495.9500,
+          "p90": 533.9030,
+          "p95": 541.1100,
+          "p99": 554.2060,
+          "minLatency": 295.9150,
+          "maxLatency": 564.1460,
+          "qps": 8.1013,
+          "recall": {
+            "recallAtK": 0.0860,
+            "k": 10,
+            "numQueries": 200
+          }
+        },
+        "save timeSeconds": 0.2427
+      }
+    }
+  }
+}

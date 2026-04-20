@@ -1,0 +1,266 @@
+{
+  "timestamp": "2026-04-18T02:35:40",
+  "config": {
+    "vectorPath": "/mnt/nvme/sift1b/base.100M.u8bin",
+    "queryPath": "/mnt/nvme/sift1b/query.public.10K.u8bin",
+    "truthPath": "truth",
+    "indexPath": "/mnt/nvme/sptag_bench/spann_index_aerospike",
+    "quantizerPath": "",
+    "ValueType": "UInt8",
+    "dimension": 128,
+    "baseVectorCount": 100000,
+    "insertVectorCount": 900000,
+    "DeleteVectorCount": 0,
+    "BatchNum": 9,
+    "topK": 10,
+    "numQueries": 1000,
+    "numThreads": 16,
+    "DistMethod": "L2"
+  },
+  "results": {
+    "build timeSeconds": 45.6885,
+    "benchmark0_query_before_insert": {
+      "numQueries": 1000,
+      "meanLatency": 2.8856,
+      "p50": 2.7430,
+      "p90": 3.9110,
+      "p95": 4.3830,
+      "p99": 5.4830,
+      "minLatency": 1.5660,
+      "maxLatency": 10.6020,
+      "qps": 5464.0625,
+      "recall": {
+        "recallAtK": 0.8073,
+        "k": 10,
+        "numQueries": 1000
+      }
+    },
+    "benchmark1_insert": {
+      "batch_1": {
+        "Load timeSeconds": 0.0138,
+        "Load vectorCount": 100000,
+        "Clone timeSeconds": 0.0343,
+        "inserted": 100000,
+        "insert timeSeconds": 14.6706,
+        "insert throughput": 6816.3653,
+        "search":    {
+          "numQueries": 1000,
+          "meanLatency": 3.5738,
+          "p50": 3.3320,
+          "p90": 5.0370,
+          "p95": 5.6500,
+          "p99": 7.4090,
+          "minLatency": 1.7090,
+          "maxLatency": 11.5970,
+          "qps": 4420.0264,
+          "recall": {
+            "recallAtK": 0.8041,
+            "k": 10,
+            "numQueries": 1000
+          }
+        },
+        "save timeSeconds": 0.0309
+      },
+      "batch_2": {
+        "Load timeSeconds": 0.0174,
+        "Load vectorCount": 200000,
+        "Clone timeSeconds": 0.0484,
+        "inserted": 100000,
+        "insert timeSeconds": 15.5170,
+        "insert throughput": 6444.5589,
+        "search":    {
+          "numQueries": 1000,
+          "meanLatency": 3.6345,
+          "p50": 3.4900,
+          "p90": 4.9050,
+          "p95": 5.4650,
+          "p99": 7.0150,
+          "minLatency": 1.9440,
+          "maxLatency": 10.8130,
+          "qps": 4340.2402,
+          "recall": {
+            "recallAtK": 0.8120,
+            "k": 10,
+            "numQueries": 1000
+          }
+        },
+        "save timeSeconds": 0.0222
+      },
+      "batch_3": {
+        "Load timeSeconds": 0.0199,
+        "Load vectorCount": 300000,
+        "Clone timeSeconds": 0.0523,
+        "inserted": 100000,
+        "insert timeSeconds": 14.5073,
+        "insert throughput": 6893.0713,
+        "search":    {
+          "numQueries": 1000,
+          "meanLatency": 3.9538,
+          "p50": 3.7860,
+          "p90": 5.4410,
+          "p95": 6.1980,
+          "p99": 7.4610,
+          "minLatency": 1.9180,
+          "maxLatency": 8.3910,
+          "qps": 3989.4199,
+          "recall": {
+            "recallAtK": 0.8224,
+            "k": 10,
+            "numQueries": 1000
+          }
+        },
+        "save timeSeconds": 0.0285
+      },
+      "batch_4": {
+        "Load timeSeconds": 0.0232,
+        "Load vectorCount": 400000,
+        "Clone timeSeconds": 0.0608,
+        "inserted": 100000,
+        "insert timeSeconds": 14.4348,
+        "insert throughput": 6927.6846,
+        "search":    {
+          "numQueries": 1000,
+          "meanLatency": 5.1474,
+          "p50": 4.7930,
+          "p90": 7.5310,
+          "p95": 8.4140,
+          "p99": 10.9580,
+          "minLatency": 2.3850,
+          "maxLatency": 33.2680,
+          "qps": 3076.4309,
+          "recall": {
+            "recallAtK": 0.8287,
+            "k": 10,
+            "numQueries": 1000
+          }
+        },
+        "save timeSeconds": 0.0337
+      },
+      "batch_5": {
+        "Load timeSeconds": 0.0265,
+        "Load vectorCount": 500000,
+        "Clone timeSeconds": 0.0705,
+        "inserted": 100000,
+        "insert timeSeconds": 14.8362,
+        "insert throughput": 6740.2502,
+        "search":    {
+          "numQueries": 1000,
+          "meanLatency": 4.6274,
+          "p50": 4.4580,
+          "p90": 6.2990,
+          "p95": 6.9470,
+          "p99": 8.2520,
+          "minLatency": 2.3460,
+          "maxLatency": 10.5570,
+          "qps": 3422.7585,
+          "recall": {
+            "recallAtK": 0.8327,
+            "k": 10,
+            "numQueries": 1000
+          }
+        },
+        "save timeSeconds": 0.0366
+      },
+      "batch_6": {
+        "Load timeSeconds": 0.0248,
+        "Load vectorCount": 600000,
+        "Clone timeSeconds": 0.0728,
+        "inserted": 100000,
+        "insert timeSeconds": 15.5264,
+        "insert throughput": 6440.6258,
+        "search":    {
+          "numQueries": 1000,
+          "meanLatency": 4.9383,
+          "p50": 4.7450,
+          "p90": 7.0070,
+          "p95": 7.6270,
+          "p99": 9.1340,
+          "minLatency": 2.4280,
+          "maxLatency": 10.3390,
+          "qps": 3204.6145,
+          "recall": {
+            "recallAtK": 0.8368,
+            "k": 10,
+            "numQueries": 1000
+          }
+        },
+        "save timeSeconds": 0.0445
+      },
+      "batch_7": {
+        "Load timeSeconds": 0.0279,
+        "Load vectorCount": 700000,
+        "Clone timeSeconds": 0.0805,
+        "inserted": 100000,
+        "insert timeSeconds": 14.5602,
+        "insert throughput": 6868.0143,
+        "search":    {
+          "numQueries": 1000,
+          "meanLatency": 5.2073,
+          "p50": 4.9520,
+          "p90": 7.3040,
+          "p95": 8.3480,
+          "p99": 10.5010,
+          "minLatency": 2.5450,
+          "maxLatency": 15.4220,
+          "qps": 3045.9016,
+          "recall": {
+            "recallAtK": 0.8383,
+            "k": 10,
+            "numQueries": 1000
+          }
+        },
+        "save timeSeconds": 0.0529
+      },
+      "batch_8": {
+        "Load timeSeconds": 0.0303,
+        "Load vectorCount": 800000,
+        "Clone timeSeconds": 0.1112,
+        "inserted": 100000,
+        "insert timeSeconds": 15.3447,
+        "insert throughput": 6516.9090,
+        "search":    {
+          "numQueries": 1000,
+          "meanLatency": 5.8873,
+          "p50": 5.6330,
+          "p90": 8.2630,
+          "p95": 9.2050,
+          "p99": 11.1470,
+          "minLatency": 2.3340,
+          "maxLatency": 19.8110,
+          "qps": 2674.4260,
+          "recall": {
+            "recallAtK": 0.8407,
+            "k": 10,
+            "numQueries": 1000
+          }
+        },
+        "save timeSeconds": 0.0713
+      },
+      "batch_9": {
+        "Load timeSeconds": 0.0330,
+        "Load vectorCount": 900000,
+        "Clone timeSeconds": 0.1009,
+        "inserted": 100000,
+        "insert timeSeconds": 16.5299,
+        "insert throughput": 6049.6351,
+        "search":    {
+          "numQueries": 1000,
+          "meanLatency": 6.5779,
+          "p50": 6.1500,
+          "p90": 10.0050,
+          "p95": 11.3510,
+          "p99": 13.8320,
+          "minLatency": 2.7270,
+          "maxLatency": 24.5910,
+          "qps": 2399.9231,
+          "recall": {
+            "recallAtK": 0.8410,
+            "k": 10,
+            "numQueries": 1000
+          }
+        },
+        "save timeSeconds": 0.0646
+      }
+    }
+  }
+}

@@ -282,11 +282,19 @@ template <typename ValueType> class ExtraDynamicSearcher : public IExtraSearcher
 
         size_t byte_count = (static_cast<size_t>(count) + 7) / 8;
         std::vector<uint8_t> bitset(byte_count, 0);
+        size_t set_bits = 0;
         for (SizeType vid = 0; vid < count; ++vid)
         {
             if (m_versionMap->Deleted(vid))
+            {
                 bitset[static_cast<size_t>(vid) / 8] |= static_cast<uint8_t>(1u << (vid % 8));
+                ++set_bits;
+            }
         }
+        // Skip shipping a 100s-of-KB blob when nothing is actually deleted; callers
+        // already pass nullptr for an empty vector, which short-circuits the per-UDF
+        // bitset marshalling on the storage node.
+        if (set_bits == 0) return {};
         return bitset;
     }
 
