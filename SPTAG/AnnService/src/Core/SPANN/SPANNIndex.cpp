@@ -14,6 +14,51 @@
 #include "inc/Core/ResultIterator.h"
 #include "inc/Core/SPANN/SPANNResultIterator.h"
 
+// #region agent log
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <sys/stat.h>
+namespace {
+inline const char* sptag_dbg_log_path() {
+    const char* p = std::getenv("SPTAG_DBG_LOG");
+    return (p && *p) ? p : "/tmp/debug-bc136e.log";
+}
+inline void sptag_dbg_escape(const char* s, char* out, size_t outsz) {
+    size_t j = 0;
+    for (size_t i = 0; s && s[i] && j + 2 < outsz; ++i) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c == '\\' || c == '"') { if (j + 3 >= outsz) break; out[j++] = '\\'; out[j++] = s[i]; }
+        else if (c == '\n') { if (j + 3 >= outsz) break; out[j++] = '\\'; out[j++] = 'n'; }
+        else if (c == '\r') { if (j + 3 >= outsz) break; out[j++] = '\\'; out[j++] = 'r'; }
+        else if (c == '\t') { if (j + 3 >= outsz) break; out[j++] = '\\'; out[j++] = 't'; }
+        else if (c < 0x20) { if (j + 7 >= outsz) break; j += std::snprintf(out + j, outsz - j, "\\u%04x", c); }
+        else out[j++] = s[i];
+    }
+    out[j] = '\0';
+}
+inline void sptag_dbg_parent(const char* path, char* parent, size_t sz) {
+    std::strncpy(parent, path, sz - 1);
+    parent[sz - 1] = '\0';
+    char* slash = std::strrchr(parent, '/');
+    if (slash && slash != parent) { *slash = '\0'; }
+    else if (slash == parent) { parent[1] = '\0'; }
+    else { parent[0] = '.'; parent[1] = '\0'; }
+}
+inline void sptag_dbg_log(const char* hyp, const char* loc, const char* msg, const char* extra_json) {
+    FILE* f = std::fopen(sptag_dbg_log_path(), "a");
+    if (!f) return;
+    long ts = static_cast<long>(std::time(nullptr)) * 1000L;
+    std::fprintf(f,
+        "{\"sessionId\":\"bc136e\",\"hypothesisId\":\"%s\",\"location\":\"%s\",\"message\":\"%s\",\"timestamp\":%ld,\"data\":%s}\n",
+        hyp, loc, msg, ts, extra_json ? extra_json : "{}");
+    std::fclose(f);
+}
+}
+// #endregion
+
 #pragma warning(disable : 4242) // '=' : conversion from 'int' to 'short', possible loss of data
 #pragma warning(disable : 4244) // '=' : conversion from 'int' to 'short', possible loss of data
 #pragma warning(disable : 4127) // conditional expression is constant
@@ -990,12 +1035,65 @@ bool Index<T>::SelectHeadInternal(std::shared_ptr<Helper::VectorSetReader> &p_re
         std::sort(selected.begin(), selected.end());
 
         std::shared_ptr<Helper::DiskIO> output = SPTAG::f_createIO(), outputIDs = SPTAG::f_createIO();
+        // #region agent log
+        {
+            const std::string hv = m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile;
+            const std::string hi = m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile;
+            char escDir[2048], escHv[2048], escHi[2048];
+            sptag_dbg_escape(m_options.m_indexDirectory.c_str(), escDir, sizeof(escDir));
+            sptag_dbg_escape(hv.c_str(), escHv, sizeof(escHv));
+            sptag_dbg_escape(hi.c_str(), escHi, sizeof(escHi));
+            struct stat sD{}, sV{}, sI{};
+            int rD = ::stat(m_options.m_indexDirectory.c_str(), &sD); int eD = errno;
+            int rV = ::stat(hv.c_str(), &sV); int eV = errno;
+            int rI = ::stat(hi.c_str(), &sI); int eI = errno;
+            char buf[8192];
+            std::snprintf(buf, sizeof(buf),
+                "{\"indexDir\":\"%s\",\"indexDirStatRet\":%d,\"indexDirStatErrno\":%d,"
+                "\"indexIsDir\":%s,\"indexMode\":%u,"
+                "\"hvPath\":\"%s\",\"hvStatRet\":%d,\"hvStatErrno\":%d,"
+                "\"hiPath\":\"%s\",\"hiStatRet\":%d,\"hiStatErrno\":%d,"
+                "\"outputNull\":%s,\"outputIDsNull\":%s}",
+                escDir, rD, eD,
+                (rD == 0 && S_ISDIR(sD.st_mode)) ? "true" : "false",
+                rD == 0 ? static_cast<unsigned>(sD.st_mode) : 0u,
+                escHv, rV, eV, escHi, rI, eI,
+                output == nullptr ? "true" : "false",
+                outputIDs == nullptr ? "true" : "false");
+            sptag_dbg_log("H1,H2,H3,H5", "SPANNIndex.cpp:SelectHeadInternal-pre-Initialize", "state before Initialize of HeadVectors/HeadIDs", buf);
+        }
+        // #endregion
         if (output == nullptr || outputIDs == nullptr ||
             !output->Initialize((m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str(),
                                 std::ios::binary | std::ios::out) ||
             !outputIDs->Initialize((m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile).c_str(),
                                    std::ios::binary | std::ios::out))
         {
+            // #region agent log
+            {
+                int postErr = errno;
+                const std::string hv = m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile;
+                const std::string hi = m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile;
+                char escDir[2048], escHv[2048], escHi[2048];
+                sptag_dbg_escape(m_options.m_indexDirectory.c_str(), escDir, sizeof(escDir));
+                sptag_dbg_escape(hv.c_str(), escHv, sizeof(escHv));
+                sptag_dbg_escape(hi.c_str(), escHi, sizeof(escHi));
+                struct stat sD{};
+                int rD = ::stat(m_options.m_indexDirectory.c_str(), &sD); int eD = errno;
+                char buf[8192];
+                std::snprintf(buf, sizeof(buf),
+                    "{\"errnoAfterInit\":%d,\"indexDir\":\"%s\","
+                    "\"postDirStatRet\":%d,\"postDirStatErrno\":%d,\"postIsDir\":%s,"
+                    "\"hvPath\":\"%s\",\"hiPath\":\"%s\","
+                    "\"outputNull\":%s,\"outputIDsNull\":%s}",
+                    postErr, escDir, rD, eD,
+                    (rD == 0 && S_ISDIR(sD.st_mode)) ? "true" : "false",
+                    escHv, escHi,
+                    output == nullptr ? "true" : "false",
+                    outputIDs == nullptr ? "true" : "false");
+                sptag_dbg_log("H1,H2,H5", "SPANNIndex.cpp:SelectHeadInternal-post-Initialize-fail", "Initialize failed, captured errno", buf);
+            }
+            // #endregion
             SPTAGLIB_LOG(Helper::LogLevel::LL_Error, "Failed to create output file:%s %s\n",
                          (m_options.m_indexDirectory + FolderSep + m_options.m_headVectorFile).c_str(),
                          (m_options.m_indexDirectory + FolderSep + m_options.m_headIDFile).c_str());
@@ -1051,9 +1149,50 @@ bool Index<T>::SelectHeadInternal(std::shared_ptr<Helper::VectorSetReader> &p_re
 
 template <typename T> ErrorCode Index<T>::BuildIndexInternal(std::shared_ptr<Helper::VectorSetReader> &p_reader)
 {
+    // #region agent log
+    {
+        const char* raw = m_options.m_indexDirectory.c_str();
+        char esc[2048]; sptag_dbg_escape(raw, esc, sizeof(esc));
+        char parent[1024]; sptag_dbg_parent(raw, parent, sizeof(parent));
+        char pesc[2048]; sptag_dbg_escape(parent, pesc, sizeof(pesc));
+        struct stat sD{}, sP{};
+        int rD = ::stat(raw, &sD); int eD = errno;
+        int rP = ::stat(parent, &sP); int eP = errno;
+        char buf[4096];
+        std::snprintf(buf, sizeof(buf),
+            "{\"indexDir\":\"%s\",\"indexDirLen\":%zu,\"parent\":\"%s\","
+            "\"dirStatRet\":%d,\"dirStatErrno\":%d,\"dirIsDir\":%s,"
+            "\"parentStatRet\":%d,\"parentStatErrno\":%d,\"parentIsDir\":%s,\"parentMode\":%u,"
+            "\"direxists\":%s,\"empty\":%s}",
+            esc, m_options.m_indexDirectory.size(), pesc,
+            rD, eD, (rD == 0 && S_ISDIR(sD.st_mode)) ? "true" : "false",
+            rP, eP, (rP == 0 && S_ISDIR(sP.st_mode)) ? "true" : "false",
+            rP == 0 ? static_cast<unsigned>(sP.st_mode) : 0u,
+            direxists(m_options.m_indexDirectory.c_str()) ? "true" : "false",
+            m_options.m_indexDirectory.empty() ? "true" : "false");
+        sptag_dbg_log("H1,H3,H4", "SPANNIndex.cpp:BuildIndexInternal-pre-mkdir", "state before mkdir", buf);
+    }
+    // #endregion
     if (!(m_options.m_indexDirectory.empty()) && !(direxists(m_options.m_indexDirectory.c_str())))
     {
-        mkdir(m_options.m_indexDirectory.c_str());
+        // #region agent log
+        errno = 0;
+        int mkdir_ret = mkdir(m_options.m_indexDirectory.c_str());
+        int mkdir_err = errno;
+        {
+            const char* raw = m_options.m_indexDirectory.c_str();
+            char esc[2048]; sptag_dbg_escape(raw, esc, sizeof(esc));
+            struct stat sD{};
+            int rD = ::stat(raw, &sD); int eD = errno;
+            char buf[4096];
+            std::snprintf(buf, sizeof(buf),
+                "{\"indexDir\":\"%s\",\"mkdirRet\":%d,\"mkdirErrno\":%d,"
+                "\"postDirStatRet\":%d,\"postDirStatErrno\":%d,\"postIsDir\":%s}",
+                esc, mkdir_ret, mkdir_err, rD, eD,
+                (rD == 0 && S_ISDIR(sD.st_mode)) ? "true" : "false");
+            sptag_dbg_log("H1,H2", "SPANNIndex.cpp:BuildIndexInternal-post-mkdir", "mkdir result", buf);
+        }
+        // #endregion
     }
     if (!(m_options.m_persistentBufferPath.empty()) && !(direxists(m_options.m_persistentBufferPath.c_str())))
     {

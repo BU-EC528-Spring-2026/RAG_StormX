@@ -65,10 +65,30 @@ echo "  lua-inc: $LUA_INC"
 # already exports the Lua C API symbols; linking the .so against libluaX.Y
 # pulls in a second Lua runtime and you'll get duplicate-state crashes at
 # the first `lua_State *L` callback.
-"$CC" -O3 -fPIC -shared \
+#
+# MARCH defaults to `x86-64-v4` (implies AVX-512F/BW/DQ/CD, the same ISA
+# level we already require) so the .so is portable across any v4-capable
+# cluster node. Override with `MARCH=native` when building on the target
+# Aerospike node to pick up vendor-specific tuning.
+#
+# USE_FMA=1 enables _mm512_fmadd_ps in the f32 L2/Dot inner loops. Left off
+# by default because the existing SPTAG scoring path deliberately avoids FMA
+# for bit-exact parity with the client-side ComputeDistance (Packed mode
+# re-scores client-side; a mismatch would perturb the final ranking).
+MARCH="${MARCH:-x86-64-v4}"
+USE_FMA="${USE_FMA:-0}"
+EXTRA_DEFS=""
+if [ "$USE_FMA" = "1" ]; then
+    EXTRA_DEFS="-DUSE_FMA"
+fi
+
+"$CC" -O3 -fPIC -shared -fno-plt -funroll-loops \
     -mavx512f -mavx512bw -mavx512dq \
+    -march="$MARCH" \
+    $EXTRA_DEFS \
     -I"$LUA_INC" \
-    "$SRC" -o "$OUT"
+    "$SRC" -o "$OUT" \
+    -ldl
 
 echo "Done. Quick sanity checks:"
 echo "  file $OUT"

@@ -3,8 +3,96 @@
 #include <lualib.h>
 #include <immintrin.h> // For AVX-512
 #include <stdint.h>    // For uint32_t
-#include <string.h>    // For memcpy
+#include <string.h>    // For memcpy, strcmp
 #include <stdlib.h>    // For malloc/free
+#include <dlfcn.h>     // For dlsym(RTLD_DEFAULT, ...) to resolve asd's as_bytes_* exports
+
+// ---------------------------------------------------------------------------
+// Zero-copy bytes support
+//
+// Aerospike's mod-lua wraps `as_bytes *` as a Lua userdata (struct mod_lua_box
+// with an 8-byte payload pointer). The upstream metatable name is "Bytes".
+// By resolving as_bytes_get / as_bytes_size from the asd process at runtime
+// (via dlsym) we can read the raw posting buffer without the Lua wrapper
+// having to call `bytes.get_string(posting, 1, total)` — which allocates a
+// fresh Lua string on every UDF invocation (tens of KB per posting).
+//
+// Both entry points (string and userdata) go through `resolve_blob`, so the
+// same compiled function handles either calling convention; the Lua wrapper
+// feature-detects on the new `_ud` alias names.
+// ---------------------------------------------------------------------------
+
+typedef struct mod_lua_box_s {
+    uint8_t   scope;
+    void     *value;   // as_bytes *
+} mod_lua_box;
+
+// Function pointers resolved lazily from the host process (asd). We don't
+// link against libaerospike-client.so — asd already exports these and the
+// dlsym(RTLD_DEFAULT, ...) lookup returns the hosting process's copy.
+static const uint8_t * (*p_as_bytes_get)(const void *)  = NULL;
+static uint32_t        (*p_as_bytes_size)(const void *) = NULL;
+static int             as_bytes_api_resolved           = 0;
+
+static int resolve_as_bytes_api(void) {
+    if (as_bytes_api_resolved) return p_as_bytes_get && p_as_bytes_size;
+    as_bytes_api_resolved = 1;
+    p_as_bytes_get  = (const uint8_t * (*)(const void *))dlsym(RTLD_DEFAULT, "as_bytes_get");
+    p_as_bytes_size = (uint32_t (*)(const void *))       dlsym(RTLD_DEFAULT, "as_bytes_size");
+    return p_as_bytes_get && p_as_bytes_size;
+}
+
+// Try to interpret stack slot `idx` as a mod-lua bytes userdata. Returns 1
+// and fills (*out_ptr, *out_size) on success, 0 otherwise. We probe several
+// plausible metatable names because mod-lua's registered name has varied
+// across releases ("Bytes" in current mod-lua; some older builds use
+// "as_bytes"). Falls through to 0 if nothing matches or dlsym failed.
+static int as_bytes_from_ud(lua_State *L, int idx,
+                            const uint8_t **out_ptr, size_t *out_size) {
+    if (lua_type(L, idx) != LUA_TUSERDATA) return 0;
+    if (!resolve_as_bytes_api()) return 0;
+
+    static const char * const names[] = { "Bytes", "as_bytes", NULL };
+    void *ud = NULL;
+    for (int i = 0; names[i] != NULL; ++i) {
+        ud = luaL_testudata(L, idx, names[i]);
+        if (ud != NULL) break;
+    }
+    if (ud == NULL) return 0;
+
+    const mod_lua_box *box = (const mod_lua_box *)ud;
+    if (box->value == NULL) return 0;
+    *out_ptr  = p_as_bytes_get(box->value);
+    *out_size = (size_t)p_as_bytes_size(box->value);
+    if (*out_ptr == NULL) return 0;
+    return 1;
+}
+
+// Accepts the arg at `idx` as either a Lua string OR a mod-lua Bytes userdata.
+// When `optional` is non-zero, nil / missing returns an empty view (ptr=NULL,
+// size=0). Returns 0 on unrecognized type, leaving Lua to raise the error.
+static int resolve_blob(lua_State *L, int idx,
+                        const char **out_ptr, size_t *out_size,
+                        int optional) {
+    int t = (idx <= lua_gettop(L)) ? lua_type(L, idx) : LUA_TNONE;
+    if (optional && (t == LUA_TNONE || t == LUA_TNIL)) {
+        *out_ptr = NULL; *out_size = 0;
+        return 1;
+    }
+    if (t == LUA_TSTRING) {
+        *out_ptr = lua_tolstring(L, idx, out_size);
+        return 1;
+    }
+    if (t == LUA_TUSERDATA) {
+        const uint8_t *p = NULL; size_t sz = 0;
+        if (as_bytes_from_ud(L, idx, &p, &sz)) {
+            *out_ptr  = (const char *)p;
+            *out_size = sz;
+            return 1;
+        }
+    }
+    return 0;
+}
 
 // Helper matching SPTAG's _mm512_sqdf_ps logic
 static inline __m512 sptag_sqdf_ps(__m512 X, __m512 Y) {
@@ -145,17 +233,24 @@ static inline int bitset_test(const unsigned char *bits, size_t bits_size, int v
 //   9. value_type (int, optional) — SPTAG VectorValueType: 1=UInt8, 3=Float (default)
 //      UInt8 only supports L2; Cosine on UInt8 returns "" so Lua can fall back.
 static int batch_candidates_pairs(lua_State *L) {
-    size_t posting_len, query_len, bitset_len = 0;
-    const char *posting      = luaL_checklstring(L, 1, &posting_len);
-    const char *query        = luaL_checklstring(L, 2, &query_len);
-    int dim                  = luaL_checkinteger(L, 3);
-    int vec_info_size        = luaL_checkinteger(L, 4);
-    int meta_data_size       = luaL_checkinteger(L, 5);
-    int top_n                = luaL_checkinteger(L, 6);
-    int dist_mode            = luaL_checkinteger(L, 7);
-    const char *bitset       = NULL;
-    if (lua_gettop(L) >= 8 && !lua_isnil(L, 8)) {
-        bitset = luaL_checklstring(L, 8, &bitset_len);
+    size_t posting_len = 0, query_len = 0, bitset_len = 0;
+    const char *posting = NULL;
+    const char *query   = NULL;
+    const char *bitset  = NULL;
+
+    if (!resolve_blob(L, 1, &posting, &posting_len, 0)) {
+        return luaL_error(L, "batch_candidates_pairs: arg 1 (posting) must be string or Bytes userdata");
+    }
+    if (!resolve_blob(L, 2, &query, &query_len, 0)) {
+        return luaL_error(L, "batch_candidates_pairs: arg 2 (query) must be string or Bytes userdata");
+    }
+    int dim            = luaL_checkinteger(L, 3);
+    int vec_info_size  = luaL_checkinteger(L, 4);
+    int meta_data_size = luaL_checkinteger(L, 5);
+    int top_n          = luaL_checkinteger(L, 6);
+    int dist_mode      = luaL_checkinteger(L, 7);
+    if (!resolve_blob(L, 8, &bitset, &bitset_len, 1)) {
+        return luaL_error(L, "batch_candidates_pairs: arg 8 (bitset) must be string, Bytes userdata, or nil");
     }
     int value_type = 3;
     if (lua_gettop(L) >= 9 && !lua_isnil(L, 9)) {
@@ -280,17 +375,24 @@ static int batch_candidates_pairs(lua_State *L) {
 //   8    — deleted_bitset (string, optional)
 
 static int batch_candidates_packed(lua_State *L) {
-    size_t posting_len, query_len, bitset_len = 0;
-    const char *posting      = luaL_checklstring(L, 1, &posting_len);
-    const char *query        = luaL_checklstring(L, 2, &query_len);
-    int dim                  = luaL_checkinteger(L, 3);
-    int vec_info_size        = luaL_checkinteger(L, 4);
-    int meta_data_size       = luaL_checkinteger(L, 5);
-    int top_n                = luaL_checkinteger(L, 6);
-    int dist_mode            = luaL_checkinteger(L, 7);
-    const char *bitset       = NULL;
-    if (lua_gettop(L) >= 8 && !lua_isnil(L, 8)) {
-        bitset = luaL_checklstring(L, 8, &bitset_len);
+    size_t posting_len = 0, query_len = 0, bitset_len = 0;
+    const char *posting = NULL;
+    const char *query   = NULL;
+    const char *bitset  = NULL;
+
+    if (!resolve_blob(L, 1, &posting, &posting_len, 0)) {
+        return luaL_error(L, "batch_candidates_packed: arg 1 (posting) must be string or Bytes userdata");
+    }
+    if (!resolve_blob(L, 2, &query, &query_len, 0)) {
+        return luaL_error(L, "batch_candidates_packed: arg 2 (query) must be string or Bytes userdata");
+    }
+    int dim            = luaL_checkinteger(L, 3);
+    int vec_info_size  = luaL_checkinteger(L, 4);
+    int meta_data_size = luaL_checkinteger(L, 5);
+    int top_n          = luaL_checkinteger(L, 6);
+    int dist_mode      = luaL_checkinteger(L, 7);
+    if (!resolve_blob(L, 8, &bitset, &bitset_len, 1)) {
+        return luaL_error(L, "batch_candidates_packed: arg 8 (bitset) must be string, Bytes userdata, or nil");
     }
     int value_type = 3;
     if (lua_gettop(L) >= 9 && !lua_isnil(L, 9)) {
@@ -399,11 +501,17 @@ static int batch_candidates_packed(lua_State *L) {
 }
 
 static const struct luaL_Reg avx_lib [] = {
-  {"f32_l2",                  f32_l2},
-  {"f32_dot",                 f32_dot},
-  {"f32_to_bits",             f32_to_bits},
-  {"batch_candidates_pairs",  batch_candidates_pairs},
-  {"batch_candidates_packed", batch_candidates_packed},
+  {"f32_l2",                     f32_l2},
+  {"f32_dot",                    f32_dot},
+  {"f32_to_bits",                f32_to_bits},
+  {"batch_candidates_pairs",     batch_candidates_pairs},
+  {"batch_candidates_packed",    batch_candidates_packed},
+  // Zero-copy aliases: accept either a Lua string or an Aerospike `Bytes`
+  // userdata for the posting/query/bitset blobs. Presence of these names in
+  // the loaded module is the feature-flag the Lua wrapper uses to decide
+  // whether it can skip the per-call `bytes.get_string(...)` copies.
+  {"batch_candidates_pairs_ud",  batch_candidates_pairs},
+  {"batch_candidates_packed_ud", batch_candidates_packed},
   {NULL, NULL}
 };
 

@@ -18,6 +18,25 @@ absence of that line is itself a signal.
 UInt8+Cosine and Int8/Int16 still hit the slow Lua path; do **not** use them
 under the 50 ms budget without first widening `avx.math.c`.
 
+> **Recommendation: `Pairs` is the default UDF mode when PQ is disabled.**
+> `Packed` returns the top-N posting entries verbatim and re-scores them on
+> the client at full precision; that is only useful when the posting bin
+> holds **PQ-compressed** vectors (server-side score is approximate, the
+> client must refine). Without PQ, `Packed` pays the same server-side cost
+> as `Pairs` plus a full-precision client-side pass and extra bytes over the
+> wire — ~2x slower in benchmarks with identical recall. `benchmarks/run_aerospike_udf_ab.sh`
+> now skips `Packed` for non-PQ runs unless you pass `--with-packed`.
+
+> **Zero-copy `_ud` entry points** (rolled out alongside this doc): the
+> compiled `avx_math.so` exports `batch_candidates_pairs_ud` and
+> `batch_candidates_packed_ud` in addition to the original string-taking
+> names. The Lua wrapper feature-detects these and, when present, hands the
+> Aerospike `Bytes` userdata to C directly — avoiding a per-UDF
+> `bytes.get_string(posting, 1, total)` allocation that used to copy the
+> entire posting record into a fresh Lua string on every call. If you roll a
+> mixed-version cluster, old nodes that only export the string names keep
+> working via the wrapper's fallback path (no change to the wire protocol).
+
 ## 1. Regenerate the embedded Lua header
 
 The SPTAG client embeds `sptag_posting.lua` in its binary so the UDF is

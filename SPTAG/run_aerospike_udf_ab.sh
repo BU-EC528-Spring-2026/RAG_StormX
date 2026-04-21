@@ -13,9 +13,15 @@
 # modes that are valid under PQ.
 #
 # Usage:
-#   ./run_aerospike_udf_ab.sh                 # non-PQ: Off, Packed, Pairs
+#   ./run_aerospike_udf_ab.sh                 # non-PQ: Off, Pairs
+#   ./run_aerospike_udf_ab.sh --with-packed   # non-PQ: also include Packed
 #   ./run_aerospike_udf_ab.sh --pq            # PQ: Off (+ Packed if allow=1)
 #   ./run_aerospike_udf_ab.sh --pq --allow-packed-pq
+#
+# NOTE: `Packed` is only useful when the posting bin holds PQ-compressed
+# vectors — the mode re-scores client-side at full precision, which is
+# pointless (and ~2x slower than Pairs) without PQ. By default non-PQ
+# runs skip it. Pass --with-packed to force the old 3-way A/B.
 #
 # Required env / CLI:
 #   SPFRESH_BINARY     path to spfresh test binary (defaults to
@@ -34,10 +40,12 @@ TOPN="${SPTAG_AEROSPIKE_UDF_TOPN:-32}"
 
 PQ=0
 ALLOW_PACKED_PQ=0
+WITH_PACKED=0
 for arg in "$@"; do
     case "$arg" in
         --pq) PQ=1 ;;
         --allow-packed-pq) ALLOW_PACKED_PQ=1 ;;
+        --with-packed) WITH_PACKED=1 ;;
         *) echo "unknown arg: $arg" >&2; exit 1 ;;
     esac
 done
@@ -63,7 +71,11 @@ if [ "$PQ" -eq 1 ]; then
     fi
     SUFFIX="pq"
 else
-    MODES=(0 1 2)    # Off, Packed, Pairs
+    if [ "$WITH_PACKED" -eq 1 ]; then
+        MODES=(0 1 2)    # Off, Packed, Pairs
+    else
+        MODES=(0 2)      # Off, Pairs (Packed is only useful with PQ)
+    fi
     export SPTAG_AEROSPIKE_UDF_ALLOW_PACKED_PQ=0
     SUFFIX="nopq"
 fi

@@ -23,6 +23,16 @@ local function slog(msg)
     info("[sptag_posting] " .. msg)
 end
 
+-- Per-call tracing is off in steady state. Flip DEBUG to `true` for a single
+-- diagnostic run to restore the `bin=... vec_count=... path=...` trace lines.
+-- Leaving this on costs ~32 info()+string.format calls per query on the
+-- server side (one per posting in the batch) and measurably regresses
+-- throughput under load.
+local DEBUG = false
+local function dlog(fmt, ...)
+    if DEBUG then slog(string.format(fmt, ...)) end
+end
+
 -- ======================================================================
 -- AVX-512 LAZY LOADER
 --
@@ -237,14 +247,6 @@ function nearest_candidates_read(rec, bin_name, query_blob, vector_info_size, me
     local del_size = 0
     if deleted_bitset ~= nil then del_size = bytes.size(deleted_bitset) end
 
-    local query_fallback = decode_query_blob(query_blob, dimension, value_type)
-    if query_fallback == nil then
-        slog(string.format(
-            "nearest_candidates_read: exit decode_query_failed dim=%s vt=%s",
-            tostring(dimension), value_type_label(value_type)))
-        return bytes(0)
-    end
-
     local vec_count = total // vector_info_size
 
     -- ================================================================
@@ -255,30 +257,44 @@ function nearest_candidates_read(rec, bin_name, query_blob, vector_info_size, me
     -- uint8+Cosine because that's not implemented natively yet.
     local h_avx, a_math = get_avx()
     local c_supported = h_avx and (value_type == 3 or (value_type == 1 and dist_mode ~= 1))
-    local c_reason = "c_path"
-    if not h_avx then
-        c_reason = "lua_fallback_no_avx_math"
-    elseif value_type ~= 3 and not (value_type == 1 and dist_mode ~= 1) then
-        c_reason = "lua_fallback_vt_or_metric (" .. value_type_label(value_type) .. "+" .. dist_mode_label(dist_mode) .. " not in C)"
+    if DEBUG then
+        local c_reason = "c_path"
+        if not h_avx then
+            c_reason = "lua_fallback_no_avx_math"
+        elseif not c_supported then
+            c_reason = "lua_fallback_vt_or_metric (" .. value_type_label(value_type) .. "+" .. dist_mode_label(dist_mode) .. " not in C)"
+        end
+        dlog("nearest_candidates_read: bin=%s vec_count=%s vis=%s meta=%s dim=%s vt=%s dist=%s top_n=%s posting_bytes=%s del_bitset_bytes=%s path=%s",
+            tostring(bin_name), tostring(vec_count), tostring(vector_info_size), tostring(meta_data_size),
+            tostring(dimension), value_type_label(value_type), dist_mode_label(dist_mode), tostring(top_n),
+            tostring(total), tostring(del_size), c_reason)
     end
-    slog(string.format(
-        "nearest_candidates_read: bin=%s vec_count=%s vis=%s meta=%s dim=%s vt=%s dist=%s top_n=%s posting_bytes=%s del_bitset_bytes=%s path=%s lua_ops~=%s (timeout_risk_if_lua)",
-        tostring(bin_name), tostring(vec_count), tostring(vector_info_size), tostring(meta_data_size),
-        tostring(dimension), value_type_label(value_type), dist_mode_label(dist_mode), tostring(top_n),
-        tostring(total), tostring(del_size), c_reason, tostring(vec_count * dimension)))
 
     if c_supported then
-        local query_str   = bytes.get_string(query_blob, 1, bytes.size(query_blob))
-        local posting_str = bytes.get_string(posting, 1, total)
-        local bitset_str  = ""
-        if del_size > 0 then
-            bitset_str = bytes.get_string(deleted_bitset, 1, del_size)
+        -- Zero-copy fast path: when avx_math exposes the `_ud` entrypoints
+        -- we hand the Aerospike `Bytes` userdata straight to C, avoiding
+        -- the per-call `bytes.get_string(posting, 1, total)` allocation
+        -- that used to materialize the whole posting record (tens of KB)
+        -- as a fresh Lua string. Old .so's without `_ud` still work via
+        -- the string fallback below.
+        local result_str
+        if a_math.batch_candidates_packed_ud ~= nil then
+            result_str = a_math.batch_candidates_packed_ud(
+                posting, query_blob, dimension,
+                vector_info_size, meta_data_size, top_n, dist_mode,
+                deleted_bitset, value_type)
+        else
+            local query_str   = bytes.get_string(query_blob, 1, bytes.size(query_blob))
+            local posting_str = bytes.get_string(posting, 1, total)
+            local bitset_str  = ""
+            if del_size > 0 then
+                bitset_str = bytes.get_string(deleted_bitset, 1, del_size)
+            end
+            result_str = a_math.batch_candidates_packed(
+                posting_str, query_str, dimension,
+                vector_info_size, meta_data_size, top_n, dist_mode,
+                bitset_str, value_type)
         end
-
-        local result_str = a_math.batch_candidates_packed(
-            posting_str, query_str, dimension,
-            vector_info_size, meta_data_size, top_n, dist_mode,
-            bitset_str, value_type)
 
         local result_len = #result_str
         if result_len == 0 then
@@ -288,13 +304,20 @@ function nearest_candidates_read(rec, bin_name, query_blob, vector_info_size, me
 
         local out = bytes(result_len)
         bytes.set_string(out, 1, result_str)
-        slog(string.format("nearest_candidates_read: c_path ok out_bytes=%s", tostring(result_len)))
+        dlog("nearest_candidates_read: c_path ok out_bytes=%s", tostring(result_len))
         return out
     end
 
     -- ================================================================
     -- SLOW LUA FALLBACK (non-float32 types or missing C module)
     -- ================================================================
+    local query_fallback = decode_query_blob(query_blob, dimension, value_type)
+    if query_fallback == nil then
+        slog(string.format(
+            "nearest_candidates_read: lua_fallback exit decode_query_failed dim=%s vt=%s",
+            tostring(dimension), value_type_label(value_type)))
+        return bytes(0)
+    end
     slog("nearest_candidates_read: lua_fallback scoring start (large vec_count may exceed udf timeout)")
     local kept        = 0
     local top_offsets = {}
@@ -366,7 +389,7 @@ function nearest_candidates_read(rec, bin_name, query_blob, vector_info_size, me
         bytes.set_bytes(out, write_pos, posting, top_offsets[i], vector_info_size)
         write_pos = write_pos + vector_info_size
     end
-    slog(string.format("nearest_candidates_read: lua_fallback ok kept=%s out_bytes=%s", tostring(kept), tostring(bytes.size(out))))
+    dlog("nearest_candidates_read: lua_fallback ok kept=%s out_bytes=%s", tostring(kept), tostring(bytes.size(out)))
     return out
 end
 
@@ -409,32 +432,46 @@ function nearest_candidates_pairs(rec, bin_name, query_blob, vector_info_size, m
     -- C path supports float32 (any dist_mode) and uint8 L2.
     local h_avx, a_math = get_avx()
     local c_supported = h_avx and (value_type == 3 or (value_type == 1 and dist_mode ~= 1))
-    local c_reason = "c_path"
-    if not h_avx then
-        c_reason = "lua_fallback_no_avx_math"
-    elseif value_type ~= 3 and not (value_type == 1 and dist_mode ~= 1) then
-        c_reason = "lua_fallback_vt_or_metric (" .. value_type_label(value_type) .. "+" .. dist_mode_label(dist_mode) .. " not in C)"
+    if DEBUG then
+        local c_reason = "c_path"
+        if not h_avx then
+            c_reason = "lua_fallback_no_avx_math"
+        elseif not c_supported then
+            c_reason = "lua_fallback_vt_or_metric (" .. value_type_label(value_type) .. "+" .. dist_mode_label(dist_mode) .. " not in C)"
+        end
+        dlog("nearest_candidates_pairs: bin=%s vec_count=%s vis=%s meta=%s dim=%s vt=%s dist=%s top_n=%s posting_bytes=%s del_bitset_bytes=%s path=%s",
+            tostring(bin_name), tostring(vec_count), tostring(vector_info_size), tostring(meta_data_size),
+            tostring(dimension), value_type_label(value_type), dist_mode_label(dist_mode), tostring(top_n),
+            tostring(total), tostring(del_size), c_reason)
     end
-    slog(string.format(
-        "nearest_candidates_pairs: bin=%s vec_count=%s vis=%s meta=%s dim=%s vt=%s dist=%s top_n=%s posting_bytes=%s del_bitset_bytes=%s path=%s lua_ops~=%s (timeout_risk_if_lua)",
-        tostring(bin_name), tostring(vec_count), tostring(vector_info_size), tostring(meta_data_size),
-        tostring(dimension), value_type_label(value_type), dist_mode_label(dist_mode), tostring(top_n),
-        tostring(total), tostring(del_size), c_reason, tostring(vec_count * dimension)))
 
     if c_supported then
-        local query_str   = bytes.get_string(query_blob, 1, bytes.size(query_blob))
-        local posting_str = bytes.get_string(posting, 1, total)
-        local bitset_str  = ""
-        if del_size > 0 then
-            bitset_str = bytes.get_string(deleted_bitset, 1, del_size)
+        -- Zero-copy fast path: when avx_math exposes the `_ud` entrypoints
+        -- we hand the Aerospike `Bytes` userdata straight to C, avoiding
+        -- the per-call `bytes.get_string(posting, 1, total)` allocation
+        -- that used to materialize the whole posting record (tens of KB)
+        -- as a fresh Lua string. Old .so's without `_ud` still work via
+        -- the string fallback below.
+        -- Delegate filter + scoring + ranking to C. Returns a packed byte
+        -- string already in our wire layout: N x (int32 vid | float32 score).
+        local result_str
+        if a_math.batch_candidates_pairs_ud ~= nil then
+            result_str = a_math.batch_candidates_pairs_ud(
+                posting, query_blob, dimension,
+                vector_info_size, meta_data_size, top_n, dist_mode,
+                deleted_bitset, value_type)
+        else
+            local query_str   = bytes.get_string(query_blob, 1, bytes.size(query_blob))
+            local posting_str = bytes.get_string(posting, 1, total)
+            local bitset_str  = ""
+            if del_size > 0 then
+                bitset_str = bytes.get_string(deleted_bitset, 1, del_size)
+            end
+            result_str = a_math.batch_candidates_pairs(
+                posting_str, query_str, dimension,
+                vector_info_size, meta_data_size, top_n, dist_mode,
+                bitset_str, value_type)
         end
-
-        -- Delegate filter + scoring + ranking to C. Returns a packed byte string
-        -- already in our wire layout: N x (int32 vid | float32 score bits).
-        local result_str = a_math.batch_candidates_pairs(
-            posting_str, query_str, dimension,
-            vector_info_size, meta_data_size, top_n, dist_mode,
-            bitset_str, value_type)
 
         local result_len = #result_str
         if result_len == 0 then
@@ -445,7 +482,7 @@ function nearest_candidates_pairs(rec, bin_name, query_blob, vector_info_size, m
         -- Single bulk copy: no per-pair Lua unpack.
         local out = bytes(result_len)
         bytes.set_string(out, 1, result_str)
-        slog(string.format("nearest_candidates_pairs: c_path ok out_bytes=%s", tostring(result_len)))
+        dlog("nearest_candidates_pairs: c_path ok out_bytes=%s", tostring(result_len))
         return out
     end
 
@@ -530,7 +567,7 @@ function nearest_candidates_pairs(rec, bin_name, query_blob, vector_info_size, m
         bytes.set_int32(out, p,     top_vids[i])
         bytes.set_int32(out, p + 4, float_to_int32_bits(top_scores[i]))
     end
-    slog(string.format("nearest_candidates_pairs: lua_fallback ok kept=%s out_bytes=%s", tostring(kept), tostring(bytes.size(out))))
+    dlog("nearest_candidates_pairs: lua_fallback ok kept=%s out_bytes=%s", tostring(kept), tostring(bytes.size(out)))
     return out
 end
 
