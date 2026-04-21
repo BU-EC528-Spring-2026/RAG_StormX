@@ -100,6 +100,14 @@ static inline __m512 sptag_sqdf_ps(__m512 X, __m512 Y) {
     return _mm512_mul_ps(d, d);
 }
 
+// Stack-allocated top-N scratch cap. Sized well above the default
+// SPTAG_AEROSPIKE_UDF_TOPN (32); the C UDF falls back to malloc only when
+// top_n exceeds this cap, so typical SPANN queries never touch the heap.
+// Per posting we would otherwise pay 2 mallocs + 2 frees for top_vids and
+// top_scores; at 16 client threads * ~100 postings/query this saves
+// thousands of heap ops per second per node.
+#define SPTAG_UDF_MAX_TOPN 256
+
 // Calculates L2 distance strictly matching SPTAG logic
 static int f32_l2(lua_State *L) {
     size_t posting_len, query_len;
@@ -268,13 +276,25 @@ static int batch_candidates_pairs(lua_State *L) {
         return 1;
     }
 
-    // Allocate top-n ranking arrays
-    int   *top_vids   = (int *)  malloc(top_n * sizeof(int));
-    float *top_scores = (float *)malloc(top_n * sizeof(float));
-    if (!top_vids || !top_scores) {
-        free(top_vids);
-        free(top_scores);
-        return luaL_error(L, "batch_candidates_pairs: out of memory");
+    // Stack-allocate the top-N ranking arrays for the common case so the
+    // hot UDF path pays zero malloc/free per record. Heap fallback only
+    // triggers when callers opt into an abnormally large top_n.
+    int   top_vids_stack[SPTAG_UDF_MAX_TOPN];
+    float top_scores_stack[SPTAG_UDF_MAX_TOPN];
+    int   *top_vids   = top_vids_stack;
+    float *top_scores = top_scores_stack;
+    int   *top_vids_heap   = NULL;
+    float *top_scores_heap = NULL;
+    if (top_n > SPTAG_UDF_MAX_TOPN) {
+        top_vids_heap   = (int *)  malloc(top_n * sizeof(int));
+        top_scores_heap = (float *)malloc(top_n * sizeof(float));
+        if (!top_vids_heap || !top_scores_heap) {
+            free(top_vids_heap);
+            free(top_scores_heap);
+            return luaL_error(L, "batch_candidates_pairs: out of memory");
+        }
+        top_vids   = top_vids_heap;
+        top_scores = top_scores_heap;
     }
 
     int kept = 0;
@@ -342,12 +362,28 @@ static int batch_candidates_pairs(lua_State *L) {
         }
     }
 
-    // Pack results: each pair is 4 bytes (int32 vid) + 4 bytes (float32 score bits)
+    // Short-circuit the empty-result case before touching the output heap.
+    // Happens when every candidate was filtered by the deleted bitset; the
+    // earlier version took this path without guard and tripped an edge
+    // case inside the Lua runtime on the server (segfault in the UDF
+    // dispatcher). Emitting "" here is equivalent to the v<=0 guard above.
+    if (kept == 0) {
+        free(top_vids_heap);
+        free(top_scores_heap);
+        lua_pushlstring(L, "", 0);
+        return 1;
+    }
+
+    // Pack the top-N (vid, score) pairs into a single heap buffer and hand
+    // it to Lua. Reverted from luaL_Buffer to keep binary compatibility
+    // with mod-lua's runtime semantics -- the savings vs lua_pushlstring
+    // are one allocation per call; the stack-allocated top arrays above
+    // already remove the dominant 2 mallocs + 2 frees per call.
     int   out_size   = kept * 8;
     char *out_buffer = (char *)malloc(out_size);
     if (!out_buffer) {
-        free(top_vids);
-        free(top_scores);
+        free(top_vids_heap);
+        free(top_scores_heap);
         return luaL_error(L, "batch_candidates_pairs: out of memory for output");
     }
 
@@ -359,8 +395,8 @@ static int batch_candidates_pairs(lua_State *L) {
 
     lua_pushlstring(L, out_buffer, out_size);
 
-    free(top_vids);
-    free(top_scores);
+    free(top_vids_heap);
+    free(top_scores_heap);
     free(out_buffer);
     return 1;
 }
@@ -409,12 +445,22 @@ static int batch_candidates_packed(lua_State *L) {
         return 1;
     }
 
-    int   *top_offsets = (int *)  malloc(top_n * sizeof(int));
-    float *top_scores  = (float *)malloc(top_n * sizeof(float));
-    if (!top_offsets || !top_scores) {
-        free(top_offsets);
-        free(top_scores);
-        return luaL_error(L, "batch_candidates_packed: out of memory");
+    int   top_offsets_stack[SPTAG_UDF_MAX_TOPN];
+    float top_scores_stack[SPTAG_UDF_MAX_TOPN];
+    int   *top_offsets = top_offsets_stack;
+    float *top_scores  = top_scores_stack;
+    int   *top_offsets_heap = NULL;
+    float *top_scores_heap  = NULL;
+    if (top_n > SPTAG_UDF_MAX_TOPN) {
+        top_offsets_heap = (int *)  malloc(top_n * sizeof(int));
+        top_scores_heap  = (float *)malloc(top_n * sizeof(float));
+        if (!top_offsets_heap || !top_scores_heap) {
+            free(top_offsets_heap);
+            free(top_scores_heap);
+            return luaL_error(L, "batch_candidates_packed: out of memory");
+        }
+        top_offsets = top_offsets_heap;
+        top_scores  = top_scores_heap;
     }
 
     int kept = 0;
@@ -478,11 +524,23 @@ static int batch_candidates_packed(lua_State *L) {
         }
     }
 
+    if (kept == 0) {
+        free(top_offsets_heap);
+        free(top_scores_heap);
+        lua_pushlstring(L, "", 0);
+        return 1;
+    }
+
+    // Pack top-N posting slices into a heap buffer and push as a Lua
+    // string. Same reasoning as batch_candidates_pairs: reverted from
+    // luaL_Buffer to lua_pushlstring after a mod-lua crash on the
+    // empty-result path. Stack-allocated top arrays above still save the
+    // dominant 2 mallocs/frees per call.
     int   out_size   = kept * vec_info_size;
-    char *out_buffer = (char *)malloc(out_size > 0 ? out_size : 1);
+    char *out_buffer = (char *)malloc(out_size);
     if (!out_buffer) {
-        free(top_offsets);
-        free(top_scores);
+        free(top_offsets_heap);
+        free(top_scores_heap);
         return luaL_error(L, "batch_candidates_packed: out of memory for output");
     }
 
@@ -494,8 +552,8 @@ static int batch_candidates_packed(lua_State *L) {
 
     lua_pushlstring(L, out_buffer, out_size);
 
-    free(top_offsets);
-    free(top_scores);
+    free(top_offsets_heap);
+    free(top_scores_heap);
     free(out_buffer);
     return 1;
 }

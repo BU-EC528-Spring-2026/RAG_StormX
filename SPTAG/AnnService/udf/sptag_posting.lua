@@ -45,6 +45,15 @@ local avx_loaded  = false
 local has_avx     = false
 local avx_load_err = nil   -- last require() error, surfaced by init()
 
+-- Pre-resolved C entrypoints. Populated on first successful get_avx() so
+-- the per-UDF-call hot path becomes a single upvalue load instead of
+-- get_avx() -> table-lookup -> nil-test. Measurably cheaper when the
+-- server is doing hundreds of UDF calls per query batch.
+local c_pairs_ud  = nil
+local c_packed_ud = nil
+local c_pairs     = nil   -- string-only legacy fallback (older .so)
+local c_packed    = nil
+
 -- Append common Aerospike UDF deployment directories to the C-module
 -- search path. Safe at top level: pure string concatenation, doesn't
 -- touch the `aerospike` table or call `require`. We append several
@@ -67,6 +76,10 @@ local function get_avx()
         local ok, mod = pcall(require, "avx_math")
         if ok and type(mod) == "table" then
             has_avx, avx_math, avx_load_err = true, mod, nil
+            c_pairs_ud  = mod.batch_candidates_pairs_ud
+            c_packed_ud = mod.batch_candidates_packed_ud
+            c_pairs     = mod.batch_candidates_pairs
+            c_packed    = mod.batch_candidates_packed
             slog("avx_math loaded ok via require (lazy, first_call)")
         else
             has_avx, avx_math = false, nil
@@ -245,11 +258,11 @@ function nearest_candidates_read(rec, bin_name, query_blob, vector_info_size, me
     -- ================================================================
     -- C path supports float32 (any dist_mode) and uint8 L2. Skip C for
     -- uint8+Cosine because that's not implemented natively yet.
-    local h_avx, a_math = get_avx()
-    local c_supported = h_avx and (value_type == 3 or (value_type == 1 and dist_mode ~= 1))
+    if not avx_loaded then get_avx() end
+    local c_supported = has_avx and (value_type == 3 or (value_type == 1 and dist_mode ~= 1))
     if DEBUG then
         local c_reason = "c_path"
-        if not h_avx then
+        if not has_avx then
             c_reason = "lua_fallback_no_avx_math"
         elseif not c_supported then
             c_reason = "lua_fallback_vt_or_metric (" .. value_type_label(value_type) .. "+" .. dist_mode_label(dist_mode) .. " not in C)"
@@ -261,15 +274,12 @@ function nearest_candidates_read(rec, bin_name, query_blob, vector_info_size, me
     end
 
     if c_supported then
-        -- Zero-copy fast path: when avx_math exposes the `_ud` entrypoints
-        -- we hand the Aerospike `Bytes` userdata straight to C, avoiding
-        -- the per-call `bytes.get_string(posting, 1, total)` allocation
-        -- that used to materialize the whole posting record (tens of KB)
-        -- as a fresh Lua string. Old .so's without `_ud` still work via
-        -- the string fallback below.
+        -- Pre-resolved upvalues: skip get_avx() + per-call table lookup.
+        -- c_packed_ud accepts Aerospike Bytes userdata directly (zero-copy);
+        -- fall back to the string variant for older .so's without `_ud`.
         local result_str
-        if a_math.batch_candidates_packed_ud ~= nil then
-            result_str = a_math.batch_candidates_packed_ud(
+        if c_packed_ud ~= nil then
+            result_str = c_packed_ud(
                 posting, query_blob, dimension,
                 vector_info_size, meta_data_size, top_n, dist_mode,
                 deleted_bitset, value_type)
@@ -280,7 +290,7 @@ function nearest_candidates_read(rec, bin_name, query_blob, vector_info_size, me
             if del_size > 0 then
                 bitset_str = bytes.get_string(deleted_bitset, 1, del_size)
             end
-            result_str = a_math.batch_candidates_packed(
+            result_str = c_packed(
                 posting_str, query_str, dimension,
                 vector_info_size, meta_data_size, top_n, dist_mode,
                 bitset_str, value_type)
@@ -413,11 +423,11 @@ function nearest_candidates_pairs(rec, bin_name, query_blob, vector_info_size, m
     -- FAST C PATH: batch_candidates_pairs handles filter + score + rank
     -- ================================================================
     -- C path supports float32 (any dist_mode) and uint8 L2.
-    local h_avx, a_math = get_avx()
-    local c_supported = h_avx and (value_type == 3 or (value_type == 1 and dist_mode ~= 1))
+    if not avx_loaded then get_avx() end
+    local c_supported = has_avx and (value_type == 3 or (value_type == 1 and dist_mode ~= 1))
     if DEBUG then
         local c_reason = "c_path"
-        if not h_avx then
+        if not has_avx then
             c_reason = "lua_fallback_no_avx_math"
         elseif not c_supported then
             c_reason = "lua_fallback_vt_or_metric (" .. value_type_label(value_type) .. "+" .. dist_mode_label(dist_mode) .. " not in C)"
@@ -429,17 +439,14 @@ function nearest_candidates_pairs(rec, bin_name, query_blob, vector_info_size, m
     end
 
     if c_supported then
-        -- Zero-copy fast path: when avx_math exposes the `_ud` entrypoints
-        -- we hand the Aerospike `Bytes` userdata straight to C, avoiding
-        -- the per-call `bytes.get_string(posting, 1, total)` allocation
-        -- that used to materialize the whole posting record (tens of KB)
-        -- as a fresh Lua string. Old .so's without `_ud` still work via
-        -- the string fallback below.
+        -- Pre-resolved upvalues: skip get_avx() + per-call table lookup.
+        -- c_pairs_ud accepts Aerospike Bytes userdata directly (zero-copy);
+        -- fall back to the string variant for older .so's without `_ud`.
         -- Delegate filter + scoring + ranking to C. Returns a packed byte
         -- string already in our wire layout: N x (int32 vid | float32 score).
         local result_str
-        if a_math.batch_candidates_pairs_ud ~= nil then
-            result_str = a_math.batch_candidates_pairs_ud(
+        if c_pairs_ud ~= nil then
+            result_str = c_pairs_ud(
                 posting, query_blob, dimension,
                 vector_info_size, meta_data_size, top_n, dist_mode,
                 deleted_bitset, value_type)
@@ -450,7 +457,7 @@ function nearest_candidates_pairs(rec, bin_name, query_blob, vector_info_size, m
             if del_size > 0 then
                 bitset_str = bytes.get_string(deleted_bitset, 1, del_size)
             end
-            result_str = a_math.batch_candidates_pairs(
+            result_str = c_pairs(
                 posting_str, query_str, dimension,
                 vector_info_size, meta_data_size, top_n, dist_mode,
                 bitset_str, value_type)
