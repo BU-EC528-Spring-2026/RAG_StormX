@@ -5,8 +5,8 @@ push-down for SPANN postings on Aerospike:
 
 | File | Role | How it gets to the server |
 | ---- | ---- | ------------------------- |
-| `sptag_posting.lua` | Record UDF entry points (`nearest_candidates_pairs`, `nearest_candidates_read`, `compact_posting`, `merge_into`, ...). | Shipped automatically by the SPTAG client on connect via `aerospike_udf_put` (see `AerospikeKeyValueIO.cpp`). |
-| `avx.math.c` &rarr; `avx_math.so` | AVX-512 C accelerator the Lua UDF loads via `require "avx_math"`. Covers Float32 (L2 + Cosine) and UInt8 (L2). | **Must be registered with the cluster** via `aql register module 'avx_math.so'` (or `aerospike_udf_put`). The cluster distributes it to every node and puts it where the embedded Lua's `require` finds it. |
+| `sptag_posting.lua` | Record UDF entry points (`nearest_candidates_pairs`, `nearest_candidates_read`, `compact_posting`, `merge_into`, ...). | **Register out-of-band before running UDF-mode benchmarks**, typically `aql -h <seed> -c "register module '<path>/sptag_posting.lua'"` (see [§3](README.md#3-deploy-avx_mathso-to-every-node) below and the main README [§6](../../../README.md#6-registering-udfs-on-remote-aerospike-nodes)). Earlier builds of the SPTAG client auto-uploaded this Lua on connect via `aerospike_udf_put`; that was **disabled** because every client-process startup would race to re-upload the same module and invalidate per-VM Lua bytecode caches mid-query. The embedded header `SptagPostingLuaEmbed.h` is still kept in the tree for ad-hoc operator scripts that want to ship the Lua programmatically. |
+| `avx.math.c` &rarr; `avx_math.so` | AVX-512 C accelerator the Lua UDF loads via `require "avx_math"`. Covers Float32 (L2 + Cosine) and UInt8 (L2). | **Copy the built `avx_math.so` to the `lua-userpath` on every node** (see [§3](README.md#3-deploy-avx_mathso-to-every-node)). You *can* run `aql register module` on the `.so` (Aerospike may say OK), but the distributed file is often not a loadable native ELF&mdash;use direct per-node **install** for this C module. |
 
 If `avx_math.so` is not registered, the Lua falls back to a much slower pure-Lua
 scoring path that will not fit inside a typical 50 ms `total_timeout` &mdash;
@@ -81,12 +81,14 @@ nm -D SPTAG/AnnService/udf/avx_math.so | grep luaopen_avx_math
 
 ## 3. Deploy `avx_math.so` to every node
 
-> **Do NOT use `aql register module` for the C extension.** Aerospike's
-> UDF distribution path was built for Lua source: it accepts the `.so`
-> and reports `OK, 1 module added`, but the binary that ends up on each
-> node under `lua-userpath` no longer exports `luaopen_avx_math` (the
-> SMD framework reserialises ELF as if it were a Lua chunk). Lua's
-> `require` then dies with:
+> **`aql register module` and native `.so` files:** Aerospike will often
+> **accept** `aql register module 'avx_math.so'` and report success. The
+> problem is not the check at the tool&mdash;it is what happens when the
+> module is **stored and replicated** for UDFs: that pipeline targets **Lua
+> source**. In practice the binary that lands under `lua-userpath` can be
+> transformed so it is **no longer a valid native shared object** (we have
+> seen the SMD path treat the payload like text). Lua's `require` then
+> fails on the **server** with something like:
 >
 > ```
 > error loading module 'avx_math' from file '/opt/aerospike/usr/udf/lua/avx_math.so':
@@ -145,7 +147,7 @@ common causes are:
 
 | Symptom in `require err=...` | Cause | Fix |
 | --- | --- | --- |
-| `module 'avx_math' not found` | The `.so` was never registered with the cluster. | Run the `aql register module 'avx_math.so'` step above. |
+| `module 'avx_math' not found` | The `.so` is missing from `lua-userpath` on the node, or the filename is wrong. | Copy `avx_math.so` to the configured `lua-userpath` on **every** node; see deploy steps in §3. |
 | `undefined symbol: lua_pushinteger` (or similar `lua_*`) | Built against a Lua ABI the server doesn't expose. | Rebuild against Lua 5.4 headers (`LUA_VER=5.4 ./build_avx_math.sh`). Do **not** link `-llua5.4` &mdash; the host process resolves Lua symbols. |
 | Module loads but every batch returns `code=-15` (no per-record response) | .so was built against the wrong Lua ABI (e.g. 5.1 against a 5.4 server). The wrapper silently falls back to the slow Lua path and exceeds `total_timeout`. | Rebuild against the matching Lua version. Confirm with `nm -D avx_math.so | grep lua_` &mdash; all `lua_*` symbols should be `U` (undefined, resolved by host). |
 | `wrong ELF class` / `cannot open shared object file` | Wrong arch, or built without `-fPIC -shared`. | Rebuild with `build_avx_math.sh`; verify with `file avx_math.so`. |

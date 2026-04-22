@@ -95,6 +95,5 @@ echo "  file $OUT"
 echo "  nm -D $OUT | grep luaopen_avx_math   # expect: T luaopen_avx_math"
 echo "  nm -D $OUT | grep -E 'lua_[a-z]+' | head    # expect: U (undefined, resolved by host)"
 echo
-echo "Deploy to each Aerospike node (or register once via aql, the cluster"
-echo "will replicate to the rest):"
-echo "  aql -h <seed> -c \"register module '$OUT'\""
+echo "Deploy: copy $OUT to lua-userpath on EVERY node (see AnnService/udf/README.md)."
+echo "Do not use aql register for this .so — use scp + install or deploy_avx_math.sh."

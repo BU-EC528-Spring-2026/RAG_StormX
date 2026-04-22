@@ -290,15 +290,22 @@ AerospikeKeyValueIO::AerospikeKeyValueIO(const std::string &host, uint16_t port,
         // NOTE: We deliberately do NOT call aerospike_udf_put() for
         // sptag_posting.lua here. The module (and its companion C
         // accelerator avx_math.so) must be registered out-of-band by
-        // the operator, e.g.:
+        // the operator:
         //
-        //     aql -h <seed> -c "register module 'sptag_posting.lua'"
-        //     aql -h <seed> -c "register module 'avx_math.so'"
+        //   Lua UDF:  aql -h <seed> -c "register module 'sptag_posting.lua'"
+        //   C module: scp avx_math.so onto every node's lua-userpath
+        //             (e.g. /opt/aerospike/usr/udf/lua/avx_math.so) using
+        //             AnnService/udf/deploy_avx_math.sh. Do NOT use
+        //             `aql register module` for the .so -- the SMD/UDF
+        //             replication path mangles native ELF objects and
+        //             the Lua wrapper then fails with
+        //             "undefined symbol: luaopen_avx_math".
         //
-        // This keeps every client-process startup from racing to
-        // re-upload the same Lua, which on a busy cluster invalidates
-        // the per-VM Lua bytecode cache mid-query and produces transient
-        // UDF failures. See AnnService/udf/README.md for the deploy steps.
+        // Not auto-uploading the Lua keeps every client-process startup
+        // from racing to re-upload the same module, which on a busy
+        // cluster invalidates the per-VM Lua bytecode cache mid-query
+        // and produces transient UDF failures. See
+        // AnnService/udf/README.md for the full deploy steps.
         SPTAGLIB_LOG(Helper::LogLevel::LL_Info,
                      "Aerospike connect ok: host=%s port=%u namespace=%s set=%s "
                      "(sptag_posting.lua / avx_math.so are expected to be pre-registered "

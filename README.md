@@ -10,8 +10,11 @@ Here is our [demo3 slides](https://docs.google.com/presentation/d/1tDpxalJ8GZXDQ
 3. [Setup Guidance](#3-setup-guidance)
    - [Build 2 Aerospike Nodes](#aerospike-2-node-cluster-on-gcp)
    - [Build 1 SPTAG Node](#setting-up-a-single-sptag-node)
-   - [Run the SPTAG Benchmark on top of Aerospike nodes](#run-the-sptag-benchmark)
-4. [Benchmarks](#4-benchmarks)
+   - [Run Aerospike benchmarks](#run-aerospike-benchmarks) *(server-side UDF modes require §6 first)*
+     - [UDF search benchmarks: env or script](#udf-search-benchmarks-env-or-script)
+4. [Benchmarks](#4-benchmarks-aerospike-only)
+5. [Aerospike UDFs: design and current status](#5-aerospike-udfs-design-and-current-status)
+6. [Registering UDFs on remote Aerospike nodes](#6-registering-udfs-on-remote-aerospike-nodes) *(prerequisite for Packed / Pairs modes)*
 
 ---
 
@@ -33,29 +36,18 @@ SPTAG returns the *index* of the nearest vector, but something still needs to st
 
 A distributed key-value database solves all three: data lives on SSD across multiple machines, survives restarts, and serves many readers in parallel.
 
-### Why Aerospike over TiKV?
+### Why Aerospike?
 
-Our workload is heavily **read-dominated** (many queries per write), so read latency is the critical metric.
-
-| Aspect | TiKV | Aerospike |
-| --- | --- | --- |
-| **Storage engine** | LSM tree -- multiple on-disk levels with compaction | Primary index lives in DRAM; each 64-byte entry stores the record's physical SSD location, so every lookup is a fast index hit in memory followed by a single SSD read |
-| **Read path** | If the key is not in the block cache, TiKV must search through multiple SST file levels, causing tail-latency spikes (up to ~10 ms) | Uses direct I/O (`O_DIRECT`) on raw devices to bypass the OS page cache, keeping read latency consistently < 1 ms |
-| **Read/write amplification** | Multiple intermediate levels cause both read and write amplification | The in-memory index points straight to the record on disk -- no intermediate levels, so amplification stays near 1x |
-| **Consistency trade-off** | Strong consistency via Raft | Relaxed consistency by default, with a large performance gain |
-
-In short, Aerospike trades a small amount of consistency for dramatically lower and more predictable read latency, which is the right trade-off for ANN serving.
+The vector-search workload is heavily **read-dominated** (many queries per write), so predictable read latency matters more than single-node strong consistency. Aerospike keeps a **primary index in DRAM** (each 64-byte entry points at the record’s on-disk location), so a lookup is a memory hit plus typically **one** storage read, without LSM-style level walks. The storage engine can use **direct I/O** on raw devices (for example local NVMe), which avoids double-buffering in the page cache and helps keep tail latency stable for large postings. This combination fits ANN serving where we need high QPS, bounded latency, and horizontal scale.
 
 ---
 
 ## 2) Current Progress
 
-- **Initial Approach:** We initially worked on integrating TiKV as our distributed storage backend. 
-- **Pivot:** Our mentor shifted their interest from integrating TiKV to having us either build our own solution from scratch or heavily modify an existing solution.
-- **Current Architecture (Aerospike):** We pivoted to using **Aerospike**. We chose Aerospike primarily because it does not rely on Log-Structured Merge (LSM) trees and uses direct I/O on raw NVMe devices, bypassing the OS page cache for massive I/O performance gains.
-- **Status:** We have successfully run SPTAG on Aerospike! This was achieved by directly modifying the SPTAG source code to include an Aerospike client integration. The current implementation is heavily "vibecoded" (a rapid, experimental proof-of-concept), so our immediate next focus is to refactor the code, ensure the architecture makes logical sense, and optimize for stability.
-- **Infrastructure:** We can spin up a **2-node Aerospike cluster** on GCP with a single deployment script, along with a dedicated SPTAG node with local NVMe SSD.
-- **Benchmarking:** We have been benchmarking SPTAG against **three storage backends** (FileIO, RocksDB, and Aerospike) using the [SIFT1B (BigANN)](https://big-ann-benchmarks.com/) dataset on NVMe SSDs. Initial results show identical recall across all backends, with RocksDB and Aerospike significantly outperforming FileIO in throughput and latency. See the [Benchmarks](#4-benchmarks) section for full details.
+- **Current architecture (Aerospike):** Postings and related blobs are stored in **Aerospike** (clustered, NVMe-backed). We modify SPTAG to use the Aerospike C client and server-side UDF hooks where applicable. The code path is still an experimental proof-of-concept: the next focus is refactoring, clearer layering, and stability.
+- **Status:** SPTAG runs end-to-end on Aerospike, including the SPFresh benchmark driven from the SPTAG Docker image.
+- **Infrastructure:** We can stand up a **2-node Aerospike cluster** on GCP with a single deployment script, plus a dedicated SPTAG build/benchmark node with local NVMe for the dataset and index artifacts.
+- **Benchmarking:** Benchmarks use the [SIFT1B (BigANN)](https://big-ann-benchmarks.com/) dataset (typically a 100M-vector subset) with NVMe for local files and **Aerospike** for distributed KV. See [Benchmarks (Aerospike only)](#4-benchmarks-aerospike-only) and [Aerospike UDFs](#5-aerospike-udfs-design-and-current-status).
 
 ---
 
@@ -609,14 +601,90 @@ This should show you cmake outputs – it will throw some warnings, but some of 
 
 ---
 
-#### Run the SPTAG Benchmark
+#### Run Aerospike benchmarks
 
-after your project has been built, run the following commands (pay attention to the variables that you have to provide):  
+After the project is built, point the process at your Aerospike cluster. For **search-path UDF** benchmarks (server-side posting scoring: Off / Packed / Pairs), use either the environment variables below or the helper script [`SPTAG/benchmarks/run_aerospike_udf_ab.sh`](SPTAG/benchmarks/run_aerospike_udf_ab.sh).
+
+> [!WARNING]
+> **Register UDFs on the cluster first if you plan to run modes other than `Off`.** The SPTAG client no longer auto-uploads `sptag_posting.lua` on connect, so any run that exercises `Packed` (mode `1`) or `Pairs` (mode `2`) — including the **default** `run_aerospike_udf_ab.sh` sweep, which is `Off + Pairs` — will fail server-side until the Lua module is registered and `avx_math.so` is installed on every node. Follow [§6 Registering UDFs on remote Aerospike nodes](#6-registering-udfs-on-remote-aerospike-nodes) **before** the steps below. Mode `0` (Off) alone does not need any UDFs.
 
 > [!IMPORTANT]
-> NOTE the `SPTAG_AEROSPIKE_HOST`, you should populate that with your own internal IP address.
+> `SPTAG_AEROSPIKE_HOST` must be the **internal IP** of an Aerospike node ([Find the Aerospike Internal IP](#find-the-aerospike-internal-ip)). The examples use `10.150.0.34`; use your own value.
 
-**Run inside the SPTAG Docker shell:**
+**Shared connection environment** (required for any Aerospike benchmark run, including UDF A/B):
+
+```bash
+export SPTAG_AEROSPIKE_HOST=10.150.0.34
+export SPTAG_AEROSPIKE_PORT=3000
+export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
+export SPTAG_AEROSPIKE_SET=sptag
+export SPTAG_AEROSPIKE_BIN=value
+export BENCHMARK_CONFIG=/app/benchmarks/benchmark.aerospike.nvme.ini
+ulimit -n 65535
+```
+
+##### UDF search benchmarks: env or script
+
+The C++ search path reads optional overrides before each query: **`SPTAG_AEROSPIKE_UDF_MODE`** (integer), **`SPTAG_AEROSPIKE_UDF_TOPN`**, and **`SPTAG_AEROSPIKE_UDF_ALLOW_PACKED_PQ`**. They override the values in the INI so you can A/B test without editing the file.
+
+| Variable | Purpose |
+| --- | --- |
+| `SPTAG_AEROSPIKE_UDF_MODE` | `0` = **Off** (no search UDF; bulk read path), `1` = **Packed**, `2` = **Pairs** (server-side candidate scoring). |
+| `SPTAG_AEROSPIKE_UDF_TOPN` | Optional. Positive integer; caps how many posting candidates the UDF considers. The A/B script defaults this to `32` when the variable is unset. |
+| `SPTAG_AEROSPIKE_UDF_ALLOW_PACKED_PQ` | `0`/`1` (or `t`/`f`). When a **PQ** quantizer is present, **Pairs** is unsound; the code clamps Pairs to **Off** or **Packed** unless you allow Packed-with-PQ. For plain (non-PQ) indexes, leave unset or `0`. |
+
+**Option A — one mode per run (manual):** export connection vars, set **`BENCHMARK_OUTPUT`** to a unique path, set **`SPTAG_AEROSPIKE_UDF_MODE`** to the mode you want, then run the benchmark binary. Repeat with a different `BENCHMARK_OUTPUT` and mode to compare JSON side by side.
+
+```bash
+cd /app
+# Export shared connection vars (SPTAG_AEROSPIKE_*, BENCHMARK_CONFIG) from the block above.
+# optional: clear prior local benchmark state for a clean run
+# rm -f perftest_*.bin perftest_batchtruth.* 2>/dev/null; rm -rf proidx/spann_index_aero* 2>/dev/null
+
+export SPTAG_AEROSPIKE_UDF_MODE=0   # Off — change to 1 (Packed) or 2 (Pairs) for A/B
+export BENCHMARK_OUTPUT=/app/results/benchmark_udf_mode_off.json
+mkdir -p /app/results /app/proidx/spann_index_aero
+
+./Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=test_suite
+```
+
+**Option B — scripted sweep ([`SPTAG/benchmarks/run_aerospike_udf_ab.sh`](SPTAG/benchmarks/run_aerospike_udf_ab.sh)):** the script sets `SPTAG_AEROSPIKE_UDF_MODE` and `BENCHMARK_OUTPUT` for you and runs the binary once per mode. **Defaults (non-PQ):** modes **0 and 2** (Off and Pairs); Packed is skipped because without PQ it is usually slower than Pairs for no benefit (see script header). **Flags:** `--with-packed` adds mode 1; `--pq` limits runs to what is valid under PQ (often only Off, or Off+Packed with `--allow-packed-pq`).
+
+Environment variables the script itself understands (others such as `SPTAG_AEROSPIKE_HOST` are just passed through to the process):
+
+| Variable | Default (from repo layout) | Meaning |
+| --- | --- | --- |
+| `SPFRESH_BINARY` | `SPTAG/build/.../spfresh` | Path to the benchmark binary (Docker: often `/app/Release/SPTAGTest`). |
+| `BENCHMARK_CONFIG` | `benchmarks/benchmark.aerospike.nvme.ini` | INI passed to the test. |
+| `RESULTS_DIR` | `<SPTAG_root>/results/` (i.e. `/app/results` in Docker) | Output directory for JSON and per-run logs. |
+| `SPTAG_AEROSPIKE_UDF_TOPN` | `32` if unset in script | Forwarded; controls candidate top-N for UDF scoring. |
+
+**Run inside the SPTAG Docker shell** (`/app` is the SPTAG tree in the image), using the script:
+
+```bash
+export SPTAG_AEROSPIKE_HOST=10.150.0.34
+export SPTAG_AEROSPIKE_PORT=3000
+export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
+export SPTAG_AEROSPIKE_SET=sptag
+export SPTAG_AEROSPIKE_BIN=value
+export SPFRESH_BINARY=/app/Release/SPTAGTest
+export BENCHMARK_CONFIG=/app/benchmarks/benchmark.aerospike.nvme.ini
+export RESULTS_DIR=/app/results
+mkdir -p "$RESULTS_DIR"
+ulimit -n 65535
+cd /app
+./benchmarks/run_aerospike_udf_ab.sh
+# optional: ./benchmarks/run_aerospike_udf_ab.sh --with-packed
+# optional PQ run:   ./benchmarks/run_aerospike_udf_ab.sh --pq
+#                   ./benchmarks/run_aerospike_udf_ab.sh --pq --allow-packed-pq
+```
+
+**Outputs** from the script: one JSON per mode, e.g. `benchmark_aerospike_udf_off_nopq.json` and `benchmark_aerospike_udf_pairs_nopq.json`, plus matching `.log` files from `tee`. For PQ runs the suffix is `_pq`.
+
+> [!NOTE]
+> **Minimum stack:** server-side UDF search (Packed/Pairs) needs a recent Aerospike **server and C client** with `aerospike_batch_apply`. Deploy Lua/AVX pieces per [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md). The experimental **merge/filter** posting UDFs are separate flags; see [Aerospike UDFs: design and current status](#5-aerospike-udfs-design-and-current-status).
+
+**Single full benchmark without comparing UDF modes** (one JSON file): do not set `SPTAG_AEROSPIKE_UDF_MODE`, or set it to `0` for Off. Clear local benchmark artifacts if you need a clean index, set `BENCHMARK_OUTPUT`, then invoke the test binary:
 
 ```bash
 cd /app
@@ -625,8 +693,8 @@ rm -f perftest_vector.bin perftest_meta.bin perftest_metaidx.bin \
       perftest_query.bin perftest_batchtruth.*
 rm -rf proidx/spann_index_aero proidx/spann_index_aero_*
 
-export SPTAG_AEROSPIKE_HOST=your_ip_address
-export BENCHMARK_CONFIG=/app/benchmark.aerospike.ini
+export SPTAG_AEROSPIKE_HOST=10.150.0.34
+export BENCHMARK_CONFIG=/app/benchmarks/benchmark.aerospike.nvme.ini
 export BENCHMARK_OUTPUT=/app/results/benchmark_aerospike.json
 export SPTAG_AEROSPIKE_PORT=3000
 export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
@@ -638,46 +706,27 @@ mkdir -p /app/results /app/proidx/spann_index_aero
 ./Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=test_suite
 ```
 
-> [!TIP]
-> Example of how to fill in the above:
-
-```bash
-root@ce80966fc3d0:/app# rm -f perftest_vector.bin perftest_meta.bin perftest_metaidx.bin \
-       perftest_addvector.bin perftest_addmeta.bin perftest_addmetaidx.bin \
-       perftest_query.bin perftest_batchtruth.*
-root@ce80966fc3d0:/app# rm -rf proidx/spann_index_aero proidx/spann_index_aero_*
-root@ce80966fc3d0:/app# export BENCHMARK_CONFIG=/app/benchmark.aerospike.ini
-root@ce80966fc3d0:/app# export BENCHMARK_OUTPUT=/app/results/benchmark_aerospike.json
-root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_HOST=10.150.0.28
-root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_PORT=3000
-root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
-root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_SET=sptag
-root@ce80966fc3d0:/app# export SPTAG_AEROSPIKE_BIN=value
-root@ce80966fc3d0:/app# ./Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=test_suite
-```
-
 This is what you should see:
 ![SPTAG running on top of Aerospike nodes](docs/SPTAG-benchmark-running.png)
 
-
 ---
 
-#### Benchmark Results
+#### Benchmark results (quick view)
 
-Results:
-
-to see your benchmark results, you can:
 ```bash
 cat /app/results/benchmark_aerospike.json
+# or, after run_aerospike_udf_ab.sh:
+ls -1 /app/results/benchmark_aerospike_udf_*.json
 ```
+
 Example: 
 ![our Benchmark results](docs/benchmark-results.png)
 
 ---
 
-## 4) Benchmarks
+## 4) Benchmarks (Aerospike only)
 
-This section walks through running the full SPTAG benchmark suite on the SIFT1B (BigANN) dataset across three storage backends: **FileIO**, **RocksDB**, and **Aerospike**. It assumes you have already completed all the steps in [Setup Guidance](#3-setup-guidance) above (Aerospike cluster is running, SPTAG node is provisioned, tools are installed, and the repo is cloned).
+This section covers preparing the SIFT1B (BigANN) data on NVMe and running the **Aerospike**-backed benchmark. It assumes you completed [Setup Guidance](#3-setup-guidance) (Aerospike cluster running, SPTAG image built, repo cloned, dataset paths aligned with your `benchmark.aerospike.nvme.ini` or the copy under `benchmarks/` in the image).
 
 > [!WARNING]
 > The benchmark workflow involves downloading a **119 GB** dataset and running compute-intensive index builds. Budget at least **30 minutes** for setup and **5 minutes per benchmark run** at the default 1M-vector scale. Larger scales can take hours (see [Scaling Up](#scaling-up) below). Consider running long downloads and benchmarks inside a `tmux` or `screen` session so they survive SSH disconnects.
@@ -772,7 +821,7 @@ File format: `u8bin` = 8-byte header (uint32 num_vectors, uint32 dimension) foll
 
 ### Build the SPTAG Docker Image
 
-If you have not already built the Docker image during the setup steps, build it now. The Dockerfile compiles SPTAG with both RocksDB and Aerospike backends enabled (`-DROCKSDB=ON -DAEROSPIKE=ON`).
+If you have not already built the Docker image during the setup steps, build it now. The Dockerfile enables the Aerospike client (`-DAEROSPIKE=ON`).
 
 **Run on the SPTAG VM (not inside Docker):**
 
@@ -784,83 +833,52 @@ sudo docker build -t sptag .
 > [!NOTE]
 > If you already built the image during [Setup Guidance](#3-setup-guidance), you can skip this step.
 
-### Run the Benchmarks
+### Run the Aerospike benchmark in Docker
 
-All benchmarks are run inside the Docker container. The `--run_test=SPFreshTest/BenchmarkFromConfig` flag runs only the benchmark test case, skipping all other unit tests. Pre-built benchmark configuration files are provided in the `benchmarks/` directory of the repository.
+Run inside the container with `host` networking so the client can reach Aerospike on your VPC. Mount the repo and NVMe so paths in the INI (vectors, index, output) resolve. Use the same environment variables as in [Run Aerospike benchmarks](#run-aerospike-benchmarks); `BENCHMARK_OUTPUT` is where the JSON is written.
+
+The `--run_test=SPFreshTest/BenchmarkFromConfig` test runs only the benchmark, not the full unit test suite. Pre-made configs live under `benchmarks/` (for example `benchmark.aerospike.nvme.ini`).
 
 > [!WARNING]
-> Each benchmark run at the default 1M-vector scale (100k base + 9 batches of 100k inserts) takes approximately **5 minutes**. Ground truth computation adds some overhead on the first run.
-
-#### FileIO on NVMe
-
-```bash
-sudo docker run --rm --net=host \
-  -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.fileio.nvme.ini \
-  -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_fileio.json \
-  -v ~/RAG_StormX:/work \
-  -v /mnt/nvme:/mnt/nvme \
-  sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig'
-```
-
-#### RocksDB on NVMe
-
-```bash
-sudo docker run --rm --net=host \
-  -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.rocksdb.nvme.ini \
-  -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_rocksdb.json \
-  -v ~/RAG_StormX:/work \
-  -v /mnt/nvme:/mnt/nvme \
-  sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig'
-```
-
-#### Aerospike (Remote Node)
-
-The Aerospike backend stores postings on your remote Aerospike cluster instead of local disk. You need to pass the connection parameters as environment variables:
+> Each run at the default 1M-vector scale (100k base + 9 batches of 100k inserts) takes on the order of **5 minutes**. Ground truth adds overhead on the first run.
 
 | Variable | Description | Example |
 | --- | --- | --- |
-| `SPTAG_AEROSPIKE_HOST` | Internal IP of an Aerospike node | `10.150.0.33` |
-| `SPTAG_AEROSPIKE_PORT` | Aerospike service port | `3000` |
-| `SPTAG_AEROSPIKE_NAMESPACE` | Namespace configured on the cluster | `sptag_data` |
-| `SPTAG_AEROSPIKE_SET` | Aerospike set name | `sptag` |
-| `SPTAG_AEROSPIKE_BIN` | Aerospike bin name | `posting` |
+| `SPTAG_AEROSPIKE_HOST` | Internal IP of an Aerospike node | `10.150.0.34` |
+| `SPTAG_AEROSPIKE_PORT` | Service port | `3000` |
+| `SPTAG_AEROSPIKE_NAMESPACE` | Namespace on the cluster | `sptag_data` |
+| `SPTAG_AEROSPIKE_SET` | Set name | `sptag` |
+| `SPTAG_AEROSPIKE_BIN` | Bin name for posting payloads | `value` |
+| `BENCHMARK_CONFIG` | INI file path in the container | `/work/benchmarks/benchmark.aerospike.nvme.ini` |
+| `BENCHMARK_OUTPUT` | JSON result path | `/mnt/nvme/sptag_bench/output_aerospike.json` |
 
-> [!IMPORTANT]
-> Replace the `SPTAG_AEROSPIKE_HOST` value below with the internal IP of one of your Aerospike nodes (find it in the GCP VM instances list, as described in [Find the Aerospike Internal IP](#find-the-aerospike-internal-ip)).
+**Example (adjust host, paths, and project root):**
 
 ```bash
 sudo docker run --rm --net=host \
   -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.aerospike.nvme.ini \
   -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_aerospike.json \
-  -e SPTAG_AEROSPIKE_HOST=10.150.0.33 \
+  -e SPTAG_AEROSPIKE_HOST=10.150.0.34 \
   -e SPTAG_AEROSPIKE_PORT=3000 \
   -e SPTAG_AEROSPIKE_NAMESPACE=sptag_data \
   -e SPTAG_AEROSPIKE_SET=sptag \
-  -e SPTAG_AEROSPIKE_BIN=posting \
-  -v ~/RAG_StormX:/work \
+  -e SPTAG_AEROSPIKE_BIN=value \
+  -v ~/RAG_StormX/SPTAG:/work \
   -v /mnt/nvme:/mnt/nvme \
-  sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig'
+  sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=test_suite'
 ```
 
-### Where to Find Results
+For multi-mode UDF comparison from the host, use `./benchmarks/run_aerospike_udf_ab.sh` inside the container (see [Run Aerospike benchmarks](#run-aerospike-benchmarks)).
 
-Each benchmark writes a JSON output file to the path specified by `BENCHMARK_OUTPUT`. After running all three benchmarks, you will find:
+### Where to find results
 
-| Backend | Output File |
-| --- | --- |
-| FileIO | `/mnt/nvme/sptag_bench/output_fileio.json` |
-| RocksDB | `/mnt/nvme/sptag_bench/output_rocksdb.json` |
-| Aerospike | `/mnt/nvme/sptag_bench/output_aerospike.json` |
-
-To inspect results:
+`BENCHMARK_OUTPUT` (or the files emitted by `run_aerospike_udf_ab.sh`) contains latency, QPS, and recall JSON. Example:
 
 ```bash
-cat /mnt/nvme/sptag_bench/output_fileio.json
-cat /mnt/nvme/sptag_bench/output_rocksdb.json
 cat /mnt/nvme/sptag_bench/output_aerospike.json
 ```
 
-The benchmark config files used for each run are in the [`benchmarks/`](benchmarks/) directory. You can adjust parameters there (e.g. vector counts, thread counts, distance method) and re-run.
+Tweak vector counts, threads, and distance in the INI under [`SPTAG/benchmarks/`](SPTAG/benchmarks/) and re-run.
 
 ### Scaling Up
 
@@ -874,3 +892,134 @@ To benchmark at larger scale, edit the config files in `benchmarks/` and adjust 
 
 > [!WARNING]
 > At the 100M scale, expect runs to take **12+ hours** and require at least **64 GB of RAM**. Make sure your SPTAG VM has enough resources and that the benchmark is running inside a `tmux` or `screen` session.
+
+---
+
+## 5) Aerospike UDFs: design and current status
+
+SPTAG can push parts of the SPANN posting read path into **Aerospike server-side UDFs** (Lua in `SPTAG/AnnService/udf/sptag_posting.lua`, optionally accelerated by a small AVX C module `avx_math.so`). The full build, deploy, and troubleshooting story is in [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md). To **compile, test locally, and install** those files on your cluster, follow [Registering UDFs on remote Aerospike nodes](#6-registering-udfs-on-remote-aerospike-nodes). In practice there are two different “UDF” topics:
+
+1. **Search UDF mode (`AerospikeUDFMode`)** — `run_aerospike_udf_ab.sh` compares **Off** vs **Pairs** (and optional **Packed**) for batch scoring on the server. This path depends on a modern Aerospike client/server, correct deployment of `avx_math.so` on every node, and matching Lua 5.4 ABI; otherwise you see slow Lua fallbacks, timeouts, or `require` errors (see the UDF README).
+
+2. **Experimental posting pipeline flags** — separate from the A/B script, the client can enable **filtered read** and **merge** UDFs for posting access and `MergePostings` updates. The checked-in benchmark artifacts show how these behaved on the same 1M-vector SPFresh run (SIFT 100M subset, UInt8 L2, 16 threads, 1000 queries):
+
+| Artifact | What it tests | What happened |
+| --- | --- | --- |
+| [`results/output_aerospike_no_udf.json`](results/output_aerospike_no_udf.json) | No experimental UDF flags; normal Aerospike I/O. | **Baseline:** ~2.3 ms mean query latency and ~0.81 recall@10 before inserts; recall rises toward **~0.84** by batch 9. |
+| [`results/output_aerospike_udf_filtered_only.json`](results/output_aerospike_udf_filtered_only.json) | **Filtered read** UDF only. | **Regression:** recall stays in line with the baseline (~0.84 by batch 9) but **mean search latency** rises to tens of ms (roughly an order of magnitude vs MultiGet), because the path issues **per-key UDF** work instead of a batched get. |
+| [`results/output_aerospike_udf_merge_only.json`](results/output_aerospike_udf_merge_only.json) | **Merge** UDF for posting updates only. | **Correctness failure:** first batch search recall collapses to **~0.04** and drifts to **~0.0075** by batch 9 even though Latency looks fast — the merge path **corrupts or mis-assembles** posting blobs during inserts. |
+
+A short structured summary of the same comparison is in [`results/benchmark_comparison_summary.json`](results/benchmark_comparison_summary.json). **Bottom line:** the experimental merge-style UDFs are not production-ready until the posting merge semantics are fixed; the filtered-read path is mainly a **latency regression** for this workload. Until then, the reliable configuration is the **no-UDF** (or UDF search mode **Off** with standard bulk reads) path documented in [Run Aerospike benchmarks](#run-aerospike-benchmarks).
+
+---
+
+## 6) Registering UDFs on remote Aerospike nodes
+
+Search-path UDFs use two kinds of files under [`SPTAG/AnnService/udf/`](SPTAG/AnnService/udf/): the **Lua** module [`sptag_posting.lua`](SPTAG/AnnService/udf/sptag_posting.lua) (UDF entry points) and a **C** extension built from [`avx.math.c`](SPTAG/AnnService/udf/avx.math.c) into a shared library `avx_math.so` that Lua loads with `require "avx_math"`. The file [`test_avx_math_local.lua`](SPTAG/AnnService/udf/test_avx_math_local.lua) is a **client-side** smoke test only: it is not registered on Aerospike; use it to prove the compiled `.so` is safe before you copy it to servers.
+
+> [!NOTE]
+> Full detail and troubleshooting lives in [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md). This section is the minimal path if you only have the sources and remote shell access to your nodes.
+
+### What Aerospike accepts for each file type
+
+| Artifact | On-disk source | How it reaches the server | Why |
+| --- | --- | --- | --- |
+| Lua UDF | `sptag_posting.lua` | Register **Lua source** with `aql` (or rely on a rebuilt SPTAG client, which can upload the embedded Lua on connect). | Text modules are what `register module` and cluster sync were designed for; the file that reaches each node is the real Lua source. |
+| C extension | `avx.math.c` → `avx_math.so` | **Copy the built `.so` to every node** into `lua-userpath` (default `/opt/aerospike/usr/udf/lua/`), e.g. `deploy_avx_math.sh` or `scp` + `install`. | `aql register module` **can** be run on a `.so` and may print success, but the **SMD/UDF distribution path is oriented toward Lua text**. In this project’s testing, the object that ends up on disk under `lua-userpath` is **not a faithful native ELF**—observed `require "avx_math"` errors such as `undefined symbol: luaopen_avx_math` even though the original `.so` was fine. **Per-node copy of the same `avx_math.so` you built** avoids that. |
+
+So: **yes**, you register the **Lua** file with `aql` the normal way. The C sources must be **compiled** to `avx_math.so` (Lua **5.4** headers for **Aerospike 7+**). For **deploying** that shared library, we recommend **not** relying on `aql register` for the `.so` given the issue above; use direct install on every node. See [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md) §3 for the same rationale and a `aerospike_udf_put` note.
+
+### 1) Build dependencies (on your laptop or a build host)
+
+- **Toolchain:** `gcc` with **AVX-512** (the build script uses `-mavx512f -mavx512bw -mavx512dq` and a portable `-march=x86-64-v4` by default). **Each Aerospike node** that will load `avx_math.so` must be **x86-64 with AVX-512**; check e.g. `grep avx512f /proc/cpuinfo` on a node.
+- **Lua headers** for the **same** embedded Lua as the server (for almost all current deployments, **Lua 5.4**): e.g. on Ubuntu, `sudo apt-get install liblua5.4-dev` and a `lua5.4` package for the local test.
+- **Aerospike 6.x** with Lua 5.1 is a special case: build with `LUA_VER=5.1` in `build_avx_math.sh` and use a compatible `sptag_posting.lua` (see the UDF README). The default in this repo targets **Aerospike 7+ / Lua 5.4**.
+
+### 2) Compile `avx.math.c` to `avx_math.so`
+
+From the repo (paths relative to the repository root):
+
+```bash
+cd SPTAG/AnnService/udf
+./build_avx_math.sh
+# writes ./avx_math.so next to avx.math.c
+```
+
+**Sanity checks** (the build should succeed with no link errors; confirm the module’s public entry and that Lua C API symbols stay **unresolved** in the `.so`—Aerospike’s process provides them at load time):
+
+```bash
+file avx_math.so
+nm -D avx_math.so | grep ' T luaopen_avx_math'   # must show T (defined)
+nm -D avx_math.so | grep ' U lua_' | head         # should show U, not T — do not link -llua
+```
+
+If `build_avx_math.sh` cannot find `lua.h` for 5.4, install the dev package above or set `LUA_VER=5.4` explicitly when your headers live in a non-standard prefix.
+
+### 3) Local smoke test **before** touching the cluster
+
+A bad `avx_math.so` can crash `aerospiked`. Run the standalone harness first:
+
+```bash
+cd SPTAG/AnnService/udf
+lua5.4 test_avx_math_local.lua
+# or: AVX_MATH_SO="$PWD/avx_math.so" lua5.4 test_avx_math_local.lua
+```
+
+You should see only `[PASS] ...` lines. If the interpreter segfaults or throws, **do not** deploy that `.so` to production nodes. This test only covers the string-based C entry points (same hot path as the server-side scoring logic); the `_ud` / zero-copy entry points are exercised once Lua loads the module in Aerospike.
+
+### 4) Install `avx_math.so` on **every** Aerospike node
+
+Target directory is the `lua-userpath` from `aerospike.conf` (often `/opt/aerospike/usr/udf/lua/`). The repo provides [`deploy_avx_math.sh`](SPTAG/AnnService/udf/deploy_avx_math.sh), which `scp`s the file, installs it with correct permissions, and **verifies** `luaopen_avx_math` is still exported on the remote file:
+
+```bash
+cd SPTAG/AnnService/udf
+./deploy_avx_math.sh 10.150.0.33 10.150.0.34
+# SRC=/path/to/avx_math.so ./deploy_avx_math.sh ...   # if not building in-tree
+# SSH_USER=ubuntu DST_DIR=/opt/aerospike/usr/udf/lua ./deploy_avx_math.sh ...
+```
+
+**Manual copy** (equivalent): copy `avx_math.so` to `/tmp` on each host, `sudo install` into `lua-userpath` as `avx_math.so`, then `ssh` and run `nm -D` on the installed path as in the UDF README.
+
+No Aerospike restart is required; the next UDF that does `require "avx_math"` picks up the new file.
+
+### 5) Register `sptag_posting.lua` on the cluster
+
+Point `aql` at a **seed** node and register the **Lua file** by absolute path. `aql` needs to be able to `open()` the Lua source on whichever host it is being run from, so either run this from the SPTAG build node (where `aql` is installed with the Aerospike C client and the checked-out repo is available) or first `scp` the `.lua` onto an Aerospike node and register from there.
+
+The safest form is to pass the absolute path explicitly rather than building one with `$(pwd)` — the path below assumes the repository was cloned at `~/RAG_StormX`, adjust to match your checkout:
+
+```bash
+aql -h 10.150.0.33 -c "register module '$HOME/RAG_StormX/SPTAG/AnnService/udf/sptag_posting.lua'"
+```
+
+If you prefer `$(pwd)`, first `cd` to the **repository root** (the directory that contains the `SPTAG/` folder) and then run:
+
+```bash
+cd ~/RAG_StormX    # repository root, NOT SPTAG/AnnService/udf
+aql -h 10.150.0.33 -c "register module '$(pwd)/SPTAG/AnnService/udf/sptag_posting.lua'"
+```
+
+(Adjust `-h` and the path.) After the C module is on disk on all nodes, force Lua VMs to reload by re-running `register` for `sptag_posting.lua` if you had already registered an older version.
+
+A **SPTAG client** built with the embedded Lua can also push this module on connect; if you are not using that build, `aql` registration is what makes the server aware of the Lua UDFs.
+
+### 6) Confirm the cluster sees Lua + C together
+
+With your namespace, set, and a dummy key (any PK), run the UDF’s `init()` to confirm `avx_math` loaded:
+
+```bash
+aql -h 10.150.0.33 -c "execute sptag_posting.init() on sptag_data.sptag where pk='diag'"
+# expect: | "avx_math:ok" |  (or "avx_math:missing" if the C module did not load)
+```
+
+On a node, watch the log while you run a benchmark or the command above:
+
+```bash
+sudo tail -f /var/log/aerospike/aerospike.log | grep -iE 'avx_math|sptag_posting'
+# Good:  ... [sptag_posting] avx_math loaded ok via require
+# Bad:   WARNING: avx_math.so not loaded. require err=...
+```
+
+If you see `undefined symbol: luaopen_avx_math` for the file under `lua-userpath`, reinstall from a **known-good** `avx_math.so` (verify with `nm -D` before and after `install`). A common cause here is a **mangled** copy produced by the UDF register path for native modules, not a bad build—overwrite with a byte-correct `scp`/`install` and **do not** use `aql` to publish the C module for this project.
+
+For the full error matrix (`require err=...`, `code=-15` timeouts, wrong Lua ABI, missing AVX-512), use [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md) §4.

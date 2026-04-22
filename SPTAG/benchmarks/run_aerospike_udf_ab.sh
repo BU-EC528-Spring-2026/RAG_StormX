@@ -24,16 +24,30 @@
 # runs skip it. Pass --with-packed to force the old 3-way A/B.
 #
 # Required env / CLI:
-#   SPFRESH_BINARY     path to spfresh test binary (defaults to
-#                      ../SPTAG/build/build-aero/Test/spfresh)
+#   SPFRESH_BINARY     path to the SPTAG benchmark test binary. Defaults to
+#                      <SPTAG_root>/Release/SPTAGTest (the output location
+#                      of the in-tree build; inside the provided Docker
+#                      image this resolves to /app/Release/SPTAGTest).
+#                      The historical `spfresh` name is NOT produced by
+#                      this repo -- the test target built by Test/CMakeLists
+#                      is named SPTAGTest.
 #   BENCHMARK_CONFIG   benchmark ini (defaults to ./benchmark.aerospike.nvme.ini)
-#   RESULTS_DIR        where to write per-mode JSON (defaults to ../results)
+#   RESULTS_DIR        where to write per-mode JSON (defaults to ../results,
+#                      i.e. <SPTAG_root>/results)
 #   SPTAG_AEROSPIKE_HOST / _PORT / _NAMESPACE / _SET / _BIN
+#
+# Prereq: sptag_posting.lua must be registered on the Aerospike cluster
+# (via `aql register module ...`) and avx_math.so copied into every
+# node's lua-userpath BEFORE running any mode other than 0 (Off).
+# See AnnService/udf/README.md for the deploy procedure.
 # ------------------------------------------------------------------
 set -euo pipefail
 
+# ROOT = the SPTAG source tree that contains this script (one level up
+# from the benchmarks/ directory). The test binary lands in
+# ${ROOT}/Release/SPTAGTest per Test/CMakeLists.txt.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SPFRESH_BINARY="${SPFRESH_BINARY:-${ROOT}/SPTAG/build/build-aero/Test/spfresh}"
+SPFRESH_BINARY="${SPFRESH_BINARY:-${ROOT}/Release/SPTAGTest}"
 BENCHMARK_CONFIG="${BENCHMARK_CONFIG:-${ROOT}/benchmarks/benchmark.aerospike.nvme.ini}"
 RESULTS_DIR="${RESULTS_DIR:-${ROOT}/results}"
 TOPN="${SPTAG_AEROSPIKE_UDF_TOPN:-32}"
