@@ -10,6 +10,11 @@ This main branch is intended to serve as the **project overview and final docume
 - [Video Demo 2](https://drive.google.com/file/d/1Qjj-PX5dkWIvpudbBmp3PT15rgMjaVBZ/view?usp=sharing)
 - [Demo 3 Slides](https://docs.google.com/presentation/d/1tDpxalJ8GZXDQENHnX0TcBkUOgIK2lVbXCJuONbyl74/edit?usp=sharing)
 
+> Backend-specific guides should live in their own branches or linked docs:
+>
+> - `aerospike` branch: Aerospike setup, deployment scripts, SPTAG integration notes, and Aerospike benchmark details.
+> - `tikv` branch: TiKV setup, integration notes, and TiKV benchmark details.
+
 ---
 
 ## Index
@@ -57,7 +62,7 @@ This two-stage design makes SPTAG practical for large vector-search workloads.
 
 SPTAG can identify nearby vectors, but real RAG systems also need to fetch the content tied to those vectors. That content may include embeddings, posting lists, document chunks, or metadata. A KV store is a natural fit because each vector ID can map to the payload needed after ANN search.
 
-In this project, we explored how different KV backends behave when used with SPTAG-like workloads.
+In this project, we explored how different KV backends behave when used with SPTAG-like workloads. 
 
 ---
 
@@ -65,7 +70,7 @@ In this project, we explored how different KV backends behave when used with SPT
 
 Our project followed a benchmark-driven approach. Instead of only discussing distributed storage theoretically, we built and tested storage paths around SPTAG and compared how different backends behaved under similar benchmark settings.
 
-The main storage backends explored were:
+The main storage backends explored were Aerospike and TiKV, however we additionally tested both RocksDB and FileIO:
 
 | Backend | Role in Project | Notes |
 | --- | --- | --- |
@@ -74,7 +79,7 @@ The main storage backends explored were:
 | Aerospike | Distributed KV experiment | Explored as a low-latency distributed KV backend with NVMe-backed storage. |
 | TiKV | Distributed KV baseline | Explored as a distributed transactional KV option and comparison point. |
 
-The project began with interest in TiKV integration. Over time, the work shifted toward understanding broader distributed KV design choices and experimenting with Aerospike as another distributed backend.
+The project began with interest in TiKV integration. Over time, the work shifted toward an optimization of Aeropsike alongside TiKV. (I need to add something else here im just not sure. )
 
 ---
 
@@ -116,7 +121,7 @@ The benchmark setup used:
 | Aerospike | Demonstrated distributed KV integration | Showed that SPTAG can run with a distributed KV backend, but performance depends on batching and request path design. |
 | TiKV | Useful distributed comparison point | Helped frame tradeoffs around stronger consistency, LSM-based storage, and distributed read overhead. |
 
-> Final numeric results should be placed here once the team agrees on the exact values to present. Suggested format:
+> Final numeric results should be placed here once we agree on the exact values to present. 
 >
 > | Backend | QPS | Mean Latency | Recall@K | Notes |
 > | --- | ---: | ---: | ---: | --- |
@@ -170,13 +175,7 @@ RAG_StormX/
     └── tikv                          # TiKV-specific implementation and setup
 ```
 
-Recommended branch split:
 
-| Location | Purpose |
-| --- | --- |
-| `main` | Final overview, project progress, benchmark summary, and presentation-facing documentation. |
-| `aerospike` | Aerospike deployment scripts, SPTAG Aerospike integration, UDF experiments, and Aerospike-specific benchmark instructions. |
-| `tikv` | TiKV setup, TiKV integration work, and TiKV-specific benchmark instructions. |
 
 ---
 
@@ -194,6 +193,8 @@ The main project outcome is not just one backend implementation, but a better un
 - persistence,
 - fault tolerance,
 - and a clean interface between ANN search and KV retrieval.
+
+( I would love some further insight into what to add here on the tikv side as well. as well as the sectuion below. )
 
 ### Future Work
 
