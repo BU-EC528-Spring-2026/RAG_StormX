@@ -10,11 +10,6 @@ This main branch is intended to serve as the **project overview and final docume
 - [Video Demo 2](https://drive.google.com/file/d/1Qjj-PX5dkWIvpudbBmp3PT15rgMjaVBZ/view?usp=sharing)
 - [Demo 3 Slides](https://docs.google.com/presentation/d/1tDpxalJ8GZXDQENHnX0TcBkUOgIK2lVbXCJuONbyl74/edit?usp=sharing)
 
-> Backend-specific guides should live in their own branches or linked docs:
->
-> - `aerospike` branch: Aerospike setup, deployment scripts, SPTAG integration notes, and Aerospike benchmark details.
-> - `tikv` branch: TiKV setup, integration notes, and TiKV benchmark details.
-
 ---
 
 ## Index
