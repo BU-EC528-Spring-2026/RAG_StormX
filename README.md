@@ -144,7 +144,7 @@ gcloud compute firewall-rules create aerospike-internal \
   --allow tcp:3000-3004 \
   --source-tags=aerospike \
   --target-tags=aerospike || true
-
+s
 # =========================
 # WRITE VM STARTUP SCRIPT
 # =========================
@@ -526,7 +526,7 @@ Check status:
 
 ```bash
 systemctl status aerospike --no-pager
-asadm -e "info"  # Should output 2 nodes, cluster formed!
+asadm -e "info"  # Should output 3 nodes, cluster formed!
 ```
 
 You should see something like this:
