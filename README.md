@@ -8,7 +8,7 @@ Here is our [demo3 slides](https://docs.google.com/presentation/d/1tDpxalJ8GZXDQ
 1. [Problem Statement](#1-problem-statement)
 2. [Current Progress](#2-current-progress)
 3. [Setup Guidance](#3-setup-guidance)
-   - [Build 2 Aerospike Nodes](#aerospike-2-node-cluster-on-gcp)
+   - [Build 3 Aerospike Nodes](#aerospike-3-node-cluster-on-gcp)
    - [Build 1 SPTAG Node](#setting-up-a-single-sptag-node)
    - [Run Aerospike benchmarks](#run-aerospike-benchmarks) *(server-side UDF modes require §6 first)*
      - [UDF search benchmarks: env or script](#udf-search-benchmarks-env-or-script)
@@ -53,14 +53,14 @@ The vector-search workload is heavily **read-dominated** (many queries per write
 
 ## 3) Setup Guidance
 
-### Aerospike 2-Node Cluster on GCP
+### Aerospike 3-Node Cluster on GCP
 
 This guide walks through how to recreate a 2-node Aerospike cluster on Google Cloud using a deployment script.  
 This setup will:
 
-- Create 2 Google Compute Engine VMs
+- Create 3 Google Compute Engine VMs
 - Install Aerospike automatically on both
-- Configure them as a 2-node cluster
+- Configure them as a 3-node cluster
 - Use local NVMe SSD storage
 - Open the required internal firewall ports for Aerospike traffic
 
