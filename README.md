@@ -115,7 +115,7 @@ set -euo pipefail
 # USER-EDITABLE SETTINGS
 # =========================
 # Set your GCP project, zone, VM specs, cluster names, and Aerospike package details here before running.
-PROJECT_ID="your-gcp-project-id"
+PROJECT_ID="YOUR-PROJECT-NAME”
 ZONE="us-east4-b"
 MACHINE_TYPE="n2-standard-4"
 IMAGE_FAMILY="ubuntu-2404-lts-amd64"
@@ -125,6 +125,7 @@ NAMESPACE_NAME="sptag_data"
 NVME_DEVICE="/dev/disk/by-id/google-local-nvme-ssd-0"
 NODE1="aerospike-node-1"
 NODE2="aerospike-node-2"
+NODE3="aerospike-node-3"
 AEROSPIKE_URL="https://download.aerospike.com/artifacts/aerospike-server-community/8.1.1.1/aerospike-server-community_8.1.1.1_tools-12.1.1_ubuntu24.04_x86_64.tgz"
 AEROSPIKE_DIR="aerospike-server-community_8.1.1.1_tools-12.1.1_ubuntu24.04_x86_64"
 
@@ -298,13 +299,6 @@ NODE1_IP=$(gcloud compute instances describe "${NODE1}" \
 # Print node 1’s internal IP for visibility and later troubleshooting.
 echo "${NODE1} internal IP: ${NODE1_IP}"
 
-# Show the tail of the startup log from node 1 so installation problems can be caught early.
-echo "Checking ${NODE1} startup log..."
-gcloud compute ssh "${NODE1}" \
-  --project="${PROJECT_ID}" \
-  --zone="${ZONE}" \
-  --command "sudo tail -50 /var/log/startup-aerospike.log"
-
 # =========================
 # CREATE NODE 2
 # =========================
@@ -327,7 +321,7 @@ gcloud compute instances create "${NODE2}" \
 echo "Waiting for ${NODE2} IP..."
 sleep 40
 
-# Read node 2’s internal IP so node 1 can later be updated to know about it too.
+# Read node 2’s internal IP so node 1 and node 3 can later be updated.
 NODE2_IP=$(gcloud compute instances describe "${NODE2}" \
   --project="${PROJECT_ID}" \
   --zone="${ZONE}" \
@@ -336,21 +330,53 @@ NODE2_IP=$(gcloud compute instances describe "${NODE2}" \
 # Print node 2’s internal IP for confirmation and debugging.
 echo "${NODE2} internal IP: ${NODE2_IP}"
 
-# Give node 1 additional time to finish its install before rewriting and restarting its Aerospike config.
-echo "Waiting for Aerospike to finish installing on ${NODE1}..."
+# =========================
+# CREATE NODE 3 
+# =========================
+echo "${NODE1_IP},${NODE2_IP}" > node3-seeds.txt
+
+echo "Creating ${NODE3}..."
+gcloud compute instances create "${NODE3}" \
+  --project="${PROJECT_ID}" \
+  --zone="${ZONE}" \
+  --machine-type="${MACHINE_TYPE}" \
+  --image-family="${IMAGE_FAMILY}" \
+  --image-project="${IMAGE_PROJECT}" \
+  --boot-disk-size=30GB \
+  --boot-disk-type=pd-balanced \
+  --local-ssd=interface=nvme \
+  --tags=aerospike \
+  --metadata="cluster-name=${CLUSTER_NAME},namespace-name=${NAMESPACE_NAME},nvme-device=${NVME_DEVICE},aerospike-url=${AEROSPIKE_URL},aerospike-dir=${AEROSPIKE_DIR}" \
+  --metadata-from-file="startup-script=./startup-aerospike.sh,seed-ips=./node3-seeds.txt"
+
+rm node3-seeds.txt
+
+echo "Waiting for ${NODE3} IP..."
+sleep 40
+
+# Read node 3’s internal IP.
+NODE3_IP=$(gcloud compute instances describe "${NODE3}" \
+  --project="${PROJECT_ID}" \
+  --zone="${ZONE}" \
+  --format="get(networkInterfaces[0].networkIP)")
+
+# Print node 3’s internal IP for confirmation and debugging.
+echo "${NODE3} internal IP: ${NODE3_IP}"
+
+# Give existing nodes additional time to finish their installs before rewriting and restarting configs.
+echo "Waiting for Aerospike to finish installing on ${NODE1} and ${NODE2}..."
 sleep 60
 
 # =========================
-# UPDATE NODE 1 SEEDS
+# UPDATE NODE 1 & 2 SEEDS
 # =========================
-# Rewrite node 1’s Aerospike config so it also includes node 2 as a mesh heartbeat seed, then restart Aerospike.
-echo "Updating ${NODE1} config with ${NODE2} as a seed..."
+# Rewrite node 1 and 2 Aerospike configs so they include the full mesh, then restart Aerospike.
 
+echo "Updating ${NODE1} config for full 3-node mesh..."
 gcloud compute ssh "${NODE1}" \
   --project="${PROJECT_ID}" \
   --zone="${ZONE}" \
   --command "sudo bash -c '
-mkdir -p /etc/aerospike
 cat > /etc/aerospike/aerospike.conf <<CONF
 service {
     cluster-name ${CLUSTER_NAME}
@@ -381,6 +407,7 @@ network {
         interval 150
         timeout 10
         mesh-seed-address-port ${NODE2_IP} 3003
+        mesh-seed-address-port ${NODE3_IP} 3003
     }
 
     admin {
@@ -402,19 +429,77 @@ CONF
 systemctl restart aerospike
 '"
 
-# Print a blank line and a final status message once both nodes are created and the seed update is complete.
+echo "Updating ${NODE2} config for full 3-node mesh..."
+gcloud compute ssh "${NODE2}" \
+  --project="${PROJECT_ID}" \
+  --zone="${ZONE}" \
+  --command "sudo bash -c '
+cat > /etc/aerospike/aerospike.conf <<CONF
+service {
+    cluster-name ${CLUSTER_NAME}
+    proto-fd-max 15000
+}
+
+logging {
+    file /var/log/aerospike/aerospike.log {
+        context any info
+    }
+}
+
+network {
+    service {
+        address any
+        port 3000
+    }
+
+    fabric {
+        address any
+        port 3001
+    }
+
+    heartbeat {
+        mode mesh
+        address any
+        port 3003
+        interval 150
+        timeout 10
+        mesh-seed-address-port ${NODE1_IP} 3003
+        mesh-seed-address-port ${NODE3_IP} 3003
+    }
+
+    admin {
+        address any
+        port 3004
+    }
+}
+
+namespace ${NAMESPACE_NAME} {
+    replication-factor 2
+    default-ttl 0
+    indexes-memory-budget 4G
+
+    storage-engine device {
+        device ${NVME_DEVICE}
+    }
+}
+CONF
+systemctl restart aerospike
+'"
+
+# Print a blank line and a final status message once all nodes are created and the seed updates are complete.
 echo
 echo "Done."
 
-# Show the final VM names, internal IPs, and status values so you can confirm both nodes exist and are running.
+# Show the final VM names, internal IPs, and status values so you can confirm all nodes exist and are running.
 echo "Cluster nodes:"
-gcloud compute instances describe "${NODE1}" --project="${PROJECT_ID}" --zone="${ZONE}" --format="table(name,networkInterfaces[0].networkIP,status)"
-gcloud compute instances describe "${NODE2}" --project="${PROJECT_ID}" --zone="${ZONE}" --format="table(name,networkInterfaces[0].networkIP,status)"
+gcloud compute instances list --project="${PROJECT_ID}" --filter="tags.items=aerospike" --format="table(name,networkInterfaces[0].networkIP,status)"
 
 # Print a ready-to-run verification command to check Aerospike cluster info from node 1.
 echo
 echo "Verify with:"
 echo "gcloud compute ssh ${NODE1} --zone ${ZONE} --project ${PROJECT_ID} --command 'asadm -e \"info\"'"
+
+
 
 ```
 
