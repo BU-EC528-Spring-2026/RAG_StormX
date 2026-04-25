@@ -115,7 +115,7 @@ set -euo pipefail
 # USER-EDITABLE SETTINGS
 # =========================
 # Set your GCP project, zone, VM specs, cluster names, and Aerospike package details here before running.
-PROJECT_ID="YOUR-PROJECT-NAME”
+PROJECT_ID="YOUR-PROJECT-NAME"
 ZONE="us-east4-b"
 MACHINE_TYPE="n2-standard-4"
 IMAGE_FAMILY="ubuntu-2404-lts-amd64"
