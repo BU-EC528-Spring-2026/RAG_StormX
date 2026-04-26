@@ -752,7 +752,7 @@ gcloud compute instances delete tikv-node-1 tikv-node-2 tikv-node-3 --zone us-ea
 gcloud compute firewall-rules delete tikv-internal --quiet
 ```
 
-### What to Expect When You See The Test Results（Distributed vs Shared-NVMe）
+### 🤔What to Expect When You See The Test Results（Distributed vs Shared-NVMe）
 
 | Aspect | Shared NVMe (single machine) | Distributed (3 VMs) |
 | --- | --- | --- |
