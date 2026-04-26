@@ -1,6 +1,5 @@
-This README file explains how to run benchmark on FileIO, RocksDB, TiKV(single node) and TiKV(3 physical nodes). First part includes instruction for single node benchmark. Second part includes instruction for 3-node TiKV version.
-
 # Benchmark on FileIO, RocksDB, TiKV(single node)
+This README explains how to run benchmarks for FileIO, RocksDB, single-node TiKV, and a three-physical-node TiKV cluster. The first part covers the single-node benchmark setup, and the second part covers the three-node TiKV setup.
 
 ## Provision the GCP Instance
 
@@ -192,7 +191,7 @@ sudo docker run --rm --net=host \
   sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig'
 ```
 
-## 3) TiKV (Shared NVMe Local Cluster)
+## 3) single-node TiKV (Shared NVMe Local Cluster)
 This section adds a local TiKV benchmark path that uses a **single NVMe device** with sub-directories shared by a 3PD + 3TiKV cluster.
 
 > [!NOTE]
