@@ -188,7 +188,7 @@ sudo docker run --rm --net=host \
 
 ### Aerospike (remote node)
 
-The Aerospike backend stores postings on a remote Aerospike cluster instead of local disk. Connection parameters are passed as environment variables:
+The Aerospike backend stores postings on a remote Aerospike cluster instead of local disk. Connection parameters can be passed as environment variables or in the benchmark INI's optional `[Aerospike]` section. Environment variables override the INI when both are set.
 
 
 | Variable                    | Description         | Example       |
@@ -202,7 +202,7 @@ The Aerospike backend stores postings on a remote Aerospike cluster instead of l
 
 ```bash
 sudo docker run --rm --net=host \
-  -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.aerospike.nvme.ini \
+  -e BENCHMARK_CONFIG=/work/SPTAG/benchmarks/benchmark.aerospike.nvme.ini \
   -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_aerospike.json \
   -e SPTAG_AEROSPIKE_HOST=10.150.0.34 \
   -e SPTAG_AEROSPIKE_PORT=3000 \
@@ -213,6 +213,15 @@ sudo docker run --rm --net=host \
   -v /mnt/nvme:/mnt/nvme \
   sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig'
 ```
+
+To sweep practical policy profiles and write one JSON/log pair per setting, run:
+
+```bash
+cd ~/RAG_StormX
+SPTAG_AEROSPIKE_HOST=10.150.0.36 ./SPTAG/benchmarks/run_aerospike_policy_sweep.sh
+```
+
+Outputs are written to `SPTAG/results/aerospike_policy_sweep/<timestamp>/`, including `summary.txt` with the best-throughput and lowest-p99 profiles.
 
 ## 6. Results (2026-04-08)
 

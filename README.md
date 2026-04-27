@@ -668,14 +668,18 @@ After the project is built, point the process at your Aerospike cluster. For **s
 **Shared connection environment** (required for any Aerospike benchmark run, including UDF A/B):
 
 ```bash
-export SPTAG_AEROSPIKE_HOST=10.150.0.34
+export SPTAG_AEROSPIKE_HOST=10.150.0.36
 export SPTAG_AEROSPIKE_PORT=3000
 export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
 export SPTAG_AEROSPIKE_SET=sptag
-export SPTAG_AEROSPIKE_BIN=value
+export SPTAG_AEROSPIKE_BIN=posting
 export BENCHMARK_CONFIG=/app/benchmarks/benchmark.aerospike.nvme.ini
 ulimit -n 65535
 ```
+
+Aerospike connection and client policy can also be set in the benchmark INI under `[Aerospike]`. Environment variables still win when both are present, which makes it easy to keep a default file and override individual knobs from the shell or Docker.
+
+Supported `[Aerospike]` keys are `Host`, `Port`, `Namespace`, `Set`, `Bin`, `User`, `Password`, `MaxConnsPerNode`, `ConnPoolsPerNode`, `ThreadPoolSize`, `MinConnsPerNode`, and `MaxSocketIdle`. The policy env vars are `SPTAG_AEROSPIKE_MAX_CONNS_PER_NODE`, `SPTAG_AEROSPIKE_CONN_POOLS_PER_NODE`, `SPTAG_AEROSPIKE_THREAD_POOL_SIZE`, `SPTAG_AEROSPIKE_MIN_CONNS_PER_NODE`, and `SPTAG_AEROSPIKE_MAX_SOCKET_IDLE`; defaults match the previous hard-coded values: `1000`, `4`, `16`, `100`, and `60`.
 
 ##### UDF search benchmarks: env or script
 
@@ -716,11 +720,11 @@ Environment variables the script itself understands (others such as `SPTAG_AEROS
 **Run inside the SPTAG Docker shell** (`/app` is the SPTAG tree in the image), using the script:
 
 ```bash
-export SPTAG_AEROSPIKE_HOST=10.150.0.34
+export SPTAG_AEROSPIKE_HOST=10.150.0.36
 export SPTAG_AEROSPIKE_PORT=3000
 export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
 export SPTAG_AEROSPIKE_SET=sptag
-export SPTAG_AEROSPIKE_BIN=value
+export SPTAG_AEROSPIKE_BIN=posting
 export SPFRESH_BINARY=/app/Release/SPTAGTest
 export BENCHMARK_CONFIG=/app/benchmarks/benchmark.aerospike.nvme.ini
 export RESULTS_DIR=/app/results
@@ -765,13 +769,13 @@ rm -f perftest_vector.bin perftest_meta.bin perftest_metaidx.bin \
       perftest_query.bin perftest_batchtruth.*
 rm -rf proidx/spann_index_aero proidx/spann_index_aero_*
 
-export SPTAG_AEROSPIKE_HOST=10.150.0.34
+export SPTAG_AEROSPIKE_HOST=10.150.0.36
 export BENCHMARK_CONFIG=/app/benchmarks/benchmark.aerospike.nvme.ini
 export BENCHMARK_OUTPUT=/app/results/benchmark_aerospike.json
 export SPTAG_AEROSPIKE_PORT=3000
 export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
 export SPTAG_AEROSPIKE_SET=sptag
-export SPTAG_AEROSPIKE_BIN=value
+export SPTAG_AEROSPIKE_BIN=posting
 
 mkdir -p /app/results /app/proidx/spann_index_aero
 

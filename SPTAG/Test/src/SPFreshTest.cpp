@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
@@ -36,6 +37,41 @@ SizeType N = 10000;
 DimensionType M = 100;
 int K = 10;
 int queries = 10;
+
+void SetEnvIfUnset(const char *name, const std::string &value)
+{
+    if (value.empty() || std::getenv(name) != nullptr)
+    {
+        return;
+    }
+
+#if defined(_WIN32)
+    _putenv_s(name, value.c_str());
+#else
+    setenv(name, value.c_str(), 0);
+#endif
+}
+
+void ApplyAerospikeBenchmarkConfig(Helper::IniReader &iniReader)
+{
+    SetEnvIfUnset("SPTAG_AEROSPIKE_HOST", iniReader.GetParameter("Aerospike", "Host", std::string("")));
+    SetEnvIfUnset("SPTAG_AEROSPIKE_PORT", iniReader.GetParameter("Aerospike", "Port", std::string("")));
+    SetEnvIfUnset("SPTAG_AEROSPIKE_NAMESPACE", iniReader.GetParameter("Aerospike", "Namespace", std::string("")));
+    SetEnvIfUnset("SPTAG_AEROSPIKE_SET", iniReader.GetParameter("Aerospike", "Set", std::string("")));
+    SetEnvIfUnset("SPTAG_AEROSPIKE_BIN", iniReader.GetParameter("Aerospike", "Bin", std::string("")));
+    SetEnvIfUnset("SPTAG_AEROSPIKE_USER", iniReader.GetParameter("Aerospike", "User", std::string("")));
+    SetEnvIfUnset("SPTAG_AEROSPIKE_PASSWORD", iniReader.GetParameter("Aerospike", "Password", std::string("")));
+    SetEnvIfUnset("SPTAG_AEROSPIKE_MAX_CONNS_PER_NODE",
+                  iniReader.GetParameter("Aerospike", "MaxConnsPerNode", std::string("")));
+    SetEnvIfUnset("SPTAG_AEROSPIKE_CONN_POOLS_PER_NODE",
+                  iniReader.GetParameter("Aerospike", "ConnPoolsPerNode", std::string("")));
+    SetEnvIfUnset("SPTAG_AEROSPIKE_THREAD_POOL_SIZE",
+                  iniReader.GetParameter("Aerospike", "ThreadPoolSize", std::string("")));
+    SetEnvIfUnset("SPTAG_AEROSPIKE_MIN_CONNS_PER_NODE",
+                  iniReader.GetParameter("Aerospike", "MinConnsPerNode", std::string("")));
+    SetEnvIfUnset("SPTAG_AEROSPIKE_MAX_SOCKET_IDLE",
+                  iniReader.GetParameter("Aerospike", "MaxSocketIdle", std::string("")));
+}
 
 std::shared_ptr<VectorSet> ConvertToFloatVectorSet(const std::shared_ptr<VectorSet> &src)
 {
@@ -2033,6 +2069,10 @@ BOOST_AUTO_TEST_CASE(BenchmarkFromConfig)
     bool rebuild = iniReader.GetParameter("Benchmark", "Rebuild", true);
     int resume = iniReader.GetParameter("Benchmark", "Resume", -1);
     std::string storageType = iniReader.GetParameter("Benchmark", "Storage", std::string("FILEIO"));
+    if (storageType == "AEROSPIKEIO")
+    {
+        ApplyAerospikeBenchmarkConfig(iniReader);
+    }
 
     BOOST_TEST_MESSAGE("=== Benchmark Configuration ===");
     BOOST_TEST_MESSAGE("Vector Path: " << vectorPath);

@@ -6,7 +6,9 @@
 // via aerospike_udf_put.
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -40,6 +42,28 @@ namespace
 bool IsAuthConfigSuccess(bool status)
 {
     return status;
+}
+
+uint32_t GetEnvUInt32(const char *name, uint32_t defaultValue)
+{
+    const char *value = std::getenv(name);
+    if (value == nullptr || *value == '\0')
+    {
+        return defaultValue;
+    }
+
+    errno = 0;
+    char *end = nullptr;
+    unsigned long parsed = std::strtoul(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0' || parsed > std::numeric_limits<uint32_t>::max())
+    {
+        SPTAGLIB_LOG(Helper::LogLevel::LL_Warning,
+                     "Invalid %s=%s for Aerospike client config; using default %u\n",
+                     name, value, defaultValue);
+        return defaultValue;
+    }
+
+    return static_cast<uint32_t>(parsed);
 }
 
 struct BatchReadContext
@@ -261,11 +285,11 @@ AerospikeKeyValueIO::AerospikeKeyValueIO(const std::string &host, uint16_t port,
     as_config_init(&m_config);
     as_config_add_host(&m_config, m_host.c_str(), m_port);
 
-    m_config.max_conns_per_node = 1000;
-    m_config.conn_pools_per_node = 4;
-    m_config.thread_pool_size = 16;
-    m_config.min_conns_per_node = 100;
-    m_config.max_socket_idle = 60;
+    m_config.max_conns_per_node = GetEnvUInt32("SPTAG_AEROSPIKE_MAX_CONNS_PER_NODE", 1000);
+    m_config.conn_pools_per_node = GetEnvUInt32("SPTAG_AEROSPIKE_CONN_POOLS_PER_NODE", 4);
+    m_config.thread_pool_size = GetEnvUInt32("SPTAG_AEROSPIKE_THREAD_POOL_SIZE", 16);
+    m_config.min_conns_per_node = GetEnvUInt32("SPTAG_AEROSPIKE_MIN_CONNS_PER_NODE", 100);
+    m_config.max_socket_idle = GetEnvUInt32("SPTAG_AEROSPIKE_MAX_SOCKET_IDLE", 60);
 
     if (!m_user.empty())
     {
