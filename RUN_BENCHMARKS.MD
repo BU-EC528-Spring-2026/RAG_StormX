@@ -193,22 +193,22 @@ The Aerospike backend stores postings on a remote Aerospike cluster instead of l
 
 | Variable                    | Description         | Example       |
 | --------------------------- | ------------------- | ------------- |
-| `SPTAG_AEROSPIKE_HOST`      | Aerospike node IP   | `10.150.0.33` |
+| `SPTAG_AEROSPIKE_HOST`      | Aerospike node internal IP | `10.150.0.34` |
 | `SPTAG_AEROSPIKE_PORT`      | Aerospike port      | `3000`        |
 | `SPTAG_AEROSPIKE_NAMESPACE` | Aerospike namespace | `sptag_data`  |
 | `SPTAG_AEROSPIKE_SET`       | Aerospike set name  | `sptag`       |
-| `SPTAG_AEROSPIKE_BIN`       | Aerospike bin name  | `posting`     |
+| `SPTAG_AEROSPIKE_BIN`       | Aerospike bin name  | `value`       |
 
 
 ```bash
 sudo docker run --rm --net=host \
   -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.aerospike.nvme.ini \
   -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_aerospike.json \
-  -e SPTAG_AEROSPIKE_HOST=10.150.0.33 \
+  -e SPTAG_AEROSPIKE_HOST=10.150.0.34 \
   -e SPTAG_AEROSPIKE_PORT=3000 \
   -e SPTAG_AEROSPIKE_NAMESPACE=sptag_data \
   -e SPTAG_AEROSPIKE_SET=sptag \
-  -e SPTAG_AEROSPIKE_BIN=posting \
+  -e SPTAG_AEROSPIKE_BIN=value \
   -v /home/Zhakh/RAG_StormX:/work \
   -v /mnt/nvme:/mnt/nvme \
   sptag bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig'

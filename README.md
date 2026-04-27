@@ -7,7 +7,7 @@ Welcome to the project repository focused on BUilding and Integrating Aerospike 
 1. [Setup Guidance](#1-setup-guidance)
    - [Build 3 Aerospike Nodes](#aerospike-3-node-cluster-on-gcp)
    - [Build 1 SPTAG Node](#setting-up-a-single-sptag-node)
-   - [Run Aerospike benchmarks](#run-aerospike-benchmarks) *(server-side UDF modes require §6 first)*
+   - [Run Aerospike benchmarks](#run-aerospike-benchmarks) *(server-side UDF modes require §4 first)*
      - [UDF search benchmarks: env or script](#udf-search-benchmarks-env-or-script)
 2. [Benchmarks](#2-benchmarks-aerospike-only)
 3. [Aerospike UDFs: design and current status](#3-aerospike-udfs-design-and-current-status)
@@ -655,15 +655,15 @@ This should show you cmake outputs – it will throw some warnings, but some of 
 
 ---
 
-#### Run Aerospike 
+#### Run Aerospike benchmarks
 
 After the project is built, point the process at your Aerospike cluster. For **search-path UDF** benchmarks (server-side posting scoring: Off / Packed / Pairs), use either the environment variables below or the helper script [`SPTAG/benchmarks/run_aerospike_udf_ab.sh`](SPTAG/benchmarks/run_aerospike_udf_ab.sh).
 
 > [!WARNING]
-> **Register UDFs on the cluster first if you plan to run modes other than `Off`.** The SPTAG client no longer auto-uploads `sptag_posting.lua` on connect, so any run that exercises `Packed` (mode `1`) or `Pairs` (mode `2`) — including the **default** `run_aerospike_udf_ab.sh` sweep, which is `Off + Pairs` — will fail server-side until the Lua module is registered and `avx_math.so` is installed on every node. Follow [§6 Registering UDFs on remote Aerospike nodes](#6-registering-udfs-on-remote-aerospike-nodes) **before** the steps below. Mode `0` (Off) alone does not need any UDFs.
+> **Register UDFs on the cluster first if you plan to run modes other than `Off`.** The SPTAG client no longer auto-uploads `sptag_posting.lua` on connect, so any run that exercises `Packed` (mode `1`) or `Pairs` (mode `2`) — including the **default** `run_aerospike_udf_ab.sh` sweep, which is `Off + Pairs` — will fail server-side until `avx_math.so` and `sptag_posting.lua` are registered. Build and register `avx_math.so` from an Aerospike node so it matches the storage-node CPU architecture; `sptag_posting.lua` is architecture-agnostic and can be registered from the SPTAG side. Follow [§4 Registering UDFs on remote Aerospike nodes](#4-registering-udfs-on-remote-aerospike-nodes) **before** the steps below. Mode `0` (Off) alone does not need any UDFs.
 
 > [!IMPORTANT]
-> `SPTAG_AEROSPIKE_HOST` must be the **internal IP** of an Aerospike node ([Find the Aerospike Internal IP](#find-the-aerospike-internal-ip)). The examples use `10.150.0.34`; use your own value.
+> `SPTAG_AEROSPIKE_HOST` must be the **internal IP** of an Aerospike node ([Find the Aerospike Internal IP](#find-the-aerospike-internal-ip)). The examples use `10.150.0.34`; use your own value. Do **not** use the SPTAG VM IP, a stale IP from an old cluster, or a public/external IP unless your firewall and network are intentionally configured for that. Use the same Aerospike IP for `aql -h "$SPTAG_AEROSPIKE_HOST"`, the UDF benchmark, and the policy sweep.
 
 **Shared connection environment** (required for any Aerospike benchmark run, including UDF A/B):
 
@@ -728,15 +728,33 @@ mkdir -p "$RESULTS_DIR"
 ulimit -n 65535
 cd /app
 ./benchmarks/run_aerospike_udf_ab.sh
-# optional: ./benchmarks/run_aerospike_udf_ab.sh --with-packed
-# optional PQ run:   ./benchmarks/run_aerospike_udf_ab.sh --pq
-#                   ./benchmarks/run_aerospike_udf_ab.sh --pq --allow-packed-pq
+# Options:
+# ./benchmarks/run_aerospike_udf_ab.sh --pq
+# ./benchmarks/run_aerospike_udf_ab.sh --pq --allow-packed-pq
 ```
 
 **Outputs** from the script: one JSON per mode, e.g. `benchmark_aerospike_udf_off_nopq.json` and `benchmark_aerospike_udf_pairs_nopq.json`, plus matching `.log` files from `tee`. For PQ runs the suffix is `_pq`.
 
 > [!NOTE]
-> **Minimum stack:** server-side UDF search (Packed/Pairs) needs a recent Aerospike **server and C client** with `aerospike_batch_apply`. Deploy Lua/AVX pieces per [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md). The experimental **merge/filter** posting UDFs are separate flags; see [Aerospike UDFs: design and current status](#5-aerospike-udfs-design-and-current-status).
+> **Minimum stack:** server-side UDF search (Packed/Pairs) needs a recent Aerospike **server and C client** with `aerospike_batch_apply`. Register Lua/AVX pieces per [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md). The experimental **merge/filter** posting UDFs are separate flags; see [Aerospike UDFs: design and current status](#3-aerospike-udfs-design-and-current-status).
+
+##### Aerospike client policy sweep
+
+To compare client connection-policy settings for the Aerospike backend, run the Docker-based sweep from the repo root on the SPTAG VM:
+
+```bash
+cd ~/RAG_StormX
+export SPTAG_AEROSPIKE_HOST=10.150.0.34
+export SPTAG_AEROSPIKE_PORT=3000
+export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
+export SPTAG_AEROSPIKE_SET=sptag
+export SPTAG_AEROSPIKE_BIN=value
+export SPTAG_DOCKER_IMAGE=sptag:latest
+export WORKSPACE_HOST=$HOME/RAG_StormX
+./SPTAG/benchmarks/run_aerospike_policy_sweep.sh
+```
+
+The script runs conservative, current/default, high-concurrency, larger-pool, and low-idle profiles. It writes JSON/log files and a `summary.txt` winner report under `SPTAG/results/aerospike_policy_sweep/<timestamp>/`.
 
 **Single full benchmark without comparing UDF modes** (one JSON file): do not set `SPTAG_AEROSPIKE_UDF_MODE`, or set it to `0` for Off. Clear local benchmark artifacts if you need a clean index, set `BENCHMARK_OUTPUT`, then invoke the test binary:
 
@@ -951,9 +969,9 @@ To benchmark at larger scale, edit the config files in `benchmarks/` and adjust 
 
 ## 3) Aerospike UDFs: design and current status
 
-SPTAG can push parts of the SPANN posting read path into **Aerospike server-side UDFs** (Lua in `SPTAG/AnnService/udf/sptag_posting.lua`, optionally accelerated by a small AVX C module `avx_math.so`). The full build, deploy, and troubleshooting story is in [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md). To **compile, test locally, and install** those files on your cluster, follow [Registering UDFs on remote Aerospike nodes](#6-registering-udfs-on-remote-aerospike-nodes). In practice there are two different “UDF” topics:
+SPTAG can push parts of the SPANN posting read path into **Aerospike server-side UDFs** (Lua in `SPTAG/AnnService/udf/sptag_posting.lua`, optionally accelerated by a small AVX C module `avx_math.so`). The full build, registration, and troubleshooting story is in [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md). To **compile, test, and register** those files on your cluster, follow [Registering UDFs on remote Aerospike nodes](#4-registering-udfs-on-remote-aerospike-nodes). In practice there are two different “UDF” topics:
 
-1. **Search UDF mode (`AerospikeUDFMode`)** — `run_aerospike_udf_ab.sh` compares **Off** vs **Pairs** (and optional **Packed**) for batch scoring on the server. This path depends on a modern Aerospike client/server, correct deployment of `avx_math.so` on every node, and matching Lua 5.4 ABI; otherwise you see slow Lua fallbacks, timeouts, or `require` errors (see the UDF README).
+1. **Search UDF mode (`AerospikeUDFMode`)** — `run_aerospike_udf_ab.sh` compares **Off** vs **Pairs** (and optional **Packed**) for batch scoring on the server. This path depends on a modern Aerospike client/server, `avx_math.so` compiled and registered from an Aerospike node, and matching Lua 5.4 ABI; otherwise you see slow Lua fallbacks, timeouts, or `require` errors (see the UDF README).
 
 2. **Experimental posting pipeline flags** — separate from the A/B script, the client can enable **filtered read** and **merge** UDFs for posting access and `MergePostings` updates. The checked-in benchmark artifacts show how these behaved on the same 1M-vector SPFresh run (SIFT 100M subset, UInt8 L2, 16 threads, 1000 queries):
 
@@ -969,35 +987,64 @@ A short structured summary of the same comparison is in [`results/benchmark_comp
 
 ## 4) Registering UDFs on remote Aerospike nodes
 
-Search-path UDFs use two kinds of files under [`SPTAG/AnnService/udf/`](SPTAG/AnnService/udf/): the **Lua** module [`sptag_posting.lua`](SPTAG/AnnService/udf/sptag_posting.lua) (UDF entry points) and a **C** extension built from [`avx.math.c`](SPTAG/AnnService/udf/avx.math.c) into a shared library `avx_math.so` that Lua loads with `require "avx_math"`. The file [`test_avx_math_local.lua`](SPTAG/AnnService/udf/test_avx_math_local.lua) is a **client-side** smoke test only: it is not registered on Aerospike; use it to prove the compiled `.so` is safe before you copy it to servers.
+Search-path UDFs use two files under [`SPTAG/AnnService/udf/`](SPTAG/AnnService/udf/): the **Lua** module [`sptag_posting.lua`](SPTAG/AnnService/udf/sptag_posting.lua) (UDF entry points) and a **C** extension built from [`avx.math.c`](SPTAG/AnnService/udf/avx.math.c) into a shared library `avx_math.so` that Lua loads with `require "avx_math"`. The `.so` is CPU-architecture-sensitive, so compile and register it from an Aerospike storage node. The Lua file is architecture-agnostic, so it can be registered from the SPTAG VM as long as `aql` can read the file.
 
 > [!NOTE]
 > Full detail and troubleshooting lives in [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md). This section is the minimal path if you only have the sources and remote shell access to your nodes.
 
-### What Aerospike accepts for each file type
+### 1) Install `aql` / Aerospike tools
 
-| Artifact | On-disk source | How it reaches the server | Why |
-| --- | --- | --- | --- |
-| Lua UDF | `sptag_posting.lua` | Register **Lua source** with `aql` (or rely on a rebuilt SPTAG client, which can upload the embedded Lua on connect). | Text modules are what `register module` and cluster sync were designed for; the file that reaches each node is the real Lua source. |
-| C extension | `avx.math.c` → `avx_math.so` | **Copy the built `.so` to every node** into `lua-userpath` (default `/opt/aerospike/usr/udf/lua/`), e.g. `deploy_avx_math.sh` or `scp` + `install`. | `aql register module` **can** be run on a `.so` and may print success, but the **SMD/UDF distribution path is oriented toward Lua text**. In this project’s testing, the object that ends up on disk under `lua-userpath` is **not a faithful native ELF**—observed `require "avx_math"` errors such as `undefined symbol: luaopen_avx_math` even though the original `.so` was fine. **Per-node copy of the same `avx_math.so` you built** avoids that. |
+Run this on the SPTAG VM, or on whichever Aerospike node will run `aql register module`:
 
-So: **yes**, you register the **Lua** file with `aql` the normal way. The C sources must be **compiled** to `avx_math.so` (Lua **5.4** headers for **Aerospike 7+**). For **deploying** that shared library, we recommend **not** relying on `aql register` for the `.so` given the issue above; use direct install on every node. See [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md) §3 for the same rationale and a `aerospike_udf_put` note.
+```bash
+cd /tmp
+wget https://download.aerospike.com/artifacts/aerospike-tools/8.4.0/aerospike-tools_8.4.0_ubuntu20.04_x86_64.tgz
+tar -xvzf aerospike-tools_8.4.0_ubuntu20.04_x86_64.tgz
+cd aerospike-tools_8.4.0_ubuntu20.04_x86_64
+sudo dpkg -i *.deb
+sudo apt-get -f install -y
+```
 
-### 1) Build dependencies (on your laptop or a build host)
+### 2) Set the Aerospike connection variables
+
+Use the internal IP address of an Aerospike node in your cluster:
+
+```bash
+export SPTAG_AEROSPIKE_HOST=10.150.0.34
+export SPTAG_AEROSPIKE_PORT=3000
+export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
+export SPTAG_AEROSPIKE_SET=sptag
+export SPTAG_AEROSPIKE_BIN=value
+```
+
+> [!WARNING]
+> `SPTAG_AEROSPIKE_HOST` must be an Aerospike node's **internal IP** that is reachable from the machine running `aql` and from the SPTAG VM/container. Do not use the SPTAG VM IP, an old cluster's IP, or a public/external IP unless you intentionally configured networking for that. Use this same IP for `aql`, the UDF benchmark, and the policy sweep.
+
+### 3) Build dependencies on an Aerospike node
 
 - **Toolchain:** `gcc` with **AVX-512** (the build script uses `-mavx512f -mavx512bw -mavx512dq` and a portable `-march=x86-64-v4` by default). **Each Aerospike node** that will load `avx_math.so` must be **x86-64 with AVX-512**; check e.g. `grep avx512f /proc/cpuinfo` on a node.
 - **Lua headers** for the **same** embedded Lua as the server (for almost all current deployments, **Lua 5.4**): e.g. on Ubuntu, `sudo apt-get install liblua5.4-dev` and a `lua5.4` package for the local test.
 - **Aerospike 6.x** with Lua 5.1 is a special case: build with `LUA_VER=5.1` in `build_avx_math.sh` and use a compatible `sptag_posting.lua` (see the UDF README). The default in this repo targets **Aerospike 7+ / Lua 5.4**.
 
-### 2) Compile `avx.math.c` to `avx_math.so`
-
-From the repo (paths relative to the repository root):
+Install the packages on the Aerospike node where you compile the C extension:
 
 ```bash
-cd SPTAG/AnnService/udf
-./build_avx_math.sh
+sudo apt-get update
+sudo apt-get install -y git build-essential liblua5.4-dev lua5.4 binutils
+```
+
+### 4) Compile and register `avx_math.so` on an Aerospike node
+
+Run these commands on the Aerospike storage node. This keeps the compiled `.so` matched to the CPU architecture that will execute it:
+
+```bash
+cd ~/RAG_StormX/SPTAG/AnnService/udf
+grep -m1 avx512f /proc/cpuinfo
+MARCH=native LUA_VER=5.4 ./build_avx_math.sh
 # writes ./avx_math.so next to avx.math.c
 ```
+
+The `grep -m1 avx512f /proc/cpuinfo` command must print a CPU flag. If it prints nothing, that node cannot run this AVX-512 accelerator.
 
 **Sanity checks** (the build should succeed with no link errors; confirm the module’s public entry and that Lua C API symbols stay **unresolved** in the `.so`—Aerospike’s process provides them at load time):
 
@@ -1009,60 +1056,45 @@ nm -D avx_math.so | grep ' U lua_' | head         # should show U, not T — do 
 
 If `build_avx_math.sh` cannot find `lua.h` for 5.4, install the dev package above or set `LUA_VER=5.4` explicitly when your headers live in a non-standard prefix.
 
-### 3) Local smoke test **before** touching the cluster
-
-A bad `avx_math.so` can crash `aerospiked`. Run the standalone harness first:
+Run the standalone harness before registration:
 
 ```bash
-cd SPTAG/AnnService/udf
 lua5.4 test_avx_math_local.lua
 # or: AVX_MATH_SO="$PWD/avx_math.so" lua5.4 test_avx_math_local.lua
 ```
 
-You should see only `[PASS] ...` lines. If the interpreter segfaults or throws, **do not** deploy that `.so` to production nodes. This test only covers the string-based C entry points (same hot path as the server-side scoring logic); the `_ud` / zero-copy entry points are exercised once Lua loads the module in Aerospike.
+You should see only `[PASS] ...` lines. If the interpreter segfaults or throws, **do not** register that `.so` on the cluster.
 
-### 4) Install `avx_math.so` on **every** Aerospike node
-
-Target directory is the `lua-userpath` from `aerospike.conf` (often `/opt/aerospike/usr/udf/lua/`). The repo provides [`deploy_avx_math.sh`](SPTAG/AnnService/udf/deploy_avx_math.sh), which `scp`s the file, installs it with correct permissions, and **verifies** `luaopen_avx_math` is still exported on the remote file:
+Register the compiled native module from that same Aerospike node:
 
 ```bash
-cd SPTAG/AnnService/udf
-./deploy_avx_math.sh 10.150.0.33 10.150.0.34
-# SRC=/path/to/avx_math.so ./deploy_avx_math.sh ...   # if not building in-tree
-# SSH_USER=ubuntu DST_DIR=/opt/aerospike/usr/udf/lua ./deploy_avx_math.sh ...
+aql -h "$SPTAG_AEROSPIKE_HOST" -c "register module '$(pwd)/avx_math.so'"
 ```
 
-**Manual copy** (equivalent): copy `avx_math.so` to `/tmp` on each host, `sudo install` into `lua-userpath` as `avx_math.so`, then `ssh` and run `nm -D` on the installed path as in the UDF README.
+### 5) Register `sptag_posting.lua`
 
-No Aerospike restart is required; the next UDF that does `require "avx_math"` picks up the new file.
-
-### 5) Register `sptag_posting.lua` on the cluster
-
-Point `aql` at a **seed** node and register the **Lua file** by absolute path. `aql` needs to be able to `open()` the Lua source on whichever host it is being run from, so either run this from the SPTAG build node (where `aql` is installed with the Aerospike C client and the checked-out repo is available) or first `scp` the `.lua` onto an Aerospike node and register from there.
-
-The safest form is to pass the absolute path explicitly rather than building one with `$(pwd)` — the path below assumes the repository was cloned at `~/RAG_StormX`, adjust to match your checkout:
+The Lua UDF is architecture-agnostic, so you can register it from the SPTAG VM or from an Aerospike node. Run the command from a machine where `sptag_posting.lua` exists:
 
 ```bash
-aql -h 10.150.0.33 -c "register module '$HOME/RAG_StormX/SPTAG/AnnService/udf/sptag_posting.lua'"
+cd ~/RAG_StormX/SPTAG/AnnService/udf
+aql -h "$SPTAG_AEROSPIKE_HOST" -c "register module '$(pwd)/sptag_posting.lua'"
 ```
 
-If you prefer `$(pwd)`, first `cd` to the **repository root** (the directory that contains the `SPTAG/` folder) and then run:
+If you are already inside `aql`, the interactive equivalent is:
 
 ```bash
-cd ~/RAG_StormX    # repository root, NOT SPTAG/AnnService/udf
-aql -h 10.150.0.33 -c "register module '$(pwd)/SPTAG/AnnService/udf/sptag_posting.lua'"
+aql -h "$SPTAG_AEROSPIKE_HOST"
+aql> register module 'sptag_posting.lua'
 ```
 
-(Adjust `-h` and the path.) After the C module is on disk on all nodes, force Lua VMs to reload by re-running `register` for `sptag_posting.lua` if you had already registered an older version.
-
-A **SPTAG client** built with the embedded Lua can also push this module on connect; if you are not using that build, `aql` registration is what makes the server aware of the Lua UDFs.
+The interactive form only works when `aql` was started from a directory containing the file being registered. If in doubt, use the absolute-path `-c` commands above.
 
 ### 6) Confirm the cluster sees Lua + C together
 
 With your namespace, set, and a dummy key (any PK), run the UDF’s `init()` to confirm `avx_math` loaded:
 
 ```bash
-aql -h 10.150.0.33 -c "execute sptag_posting.init() on sptag_data.sptag where pk='diag'"
+aql -h "$SPTAG_AEROSPIKE_HOST" -c "execute sptag_posting.init() on sptag_data.sptag where pk='diag'"
 # expect: | "avx_math:ok" |  (or "avx_math:missing" if the C module did not load)
 ```
 
@@ -1074,6 +1106,6 @@ sudo tail -f /var/log/aerospike/aerospike.log | grep -iE 'avx_math|sptag_posting
 # Bad:   WARNING: avx_math.so not loaded. require err=...
 ```
 
-If you see `undefined symbol: luaopen_avx_math` for the file under `lua-userpath`, reinstall from a **known-good** `avx_math.so` (verify with `nm -D` before and after `install`). A common cause here is a **mangled** copy produced by the UDF register path for native modules, not a bad build—overwrite with a byte-correct `scp`/`install` and **do not** use `aql` to publish the C module for this project.
+If the probe returns `"avx_math:missing"` or the server log reports a load error, rebuild `avx_math.so` on an AVX-512 Aerospike node with the correct Lua headers and re-register it from that Aerospike node with `aql`.
 
 For the full error matrix (`require err=...`, `code=-15` timeouts, wrong Lua ABI, missing AVX-512), use [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md) §4.
