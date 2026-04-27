@@ -668,11 +668,11 @@ After the project is built, point the process at your Aerospike cluster. For **s
 **Shared connection environment** (required for any Aerospike benchmark run, including UDF A/B):
 
 ```bash
-export SPTAG_AEROSPIKE_HOST=10.150.0.36
+export SPTAG_AEROSPIKE_HOST=10.150.0.34
 export SPTAG_AEROSPIKE_PORT=3000
 export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
 export SPTAG_AEROSPIKE_SET=sptag
-export SPTAG_AEROSPIKE_BIN=posting
+export SPTAG_AEROSPIKE_BIN=value
 export BENCHMARK_CONFIG=/app/benchmarks/benchmark.aerospike.nvme.ini
 ulimit -n 65535
 ```
@@ -720,11 +720,11 @@ Environment variables the script itself understands (others such as `SPTAG_AEROS
 **Run inside the SPTAG Docker shell** (`/app` is the SPTAG tree in the image), using the script:
 
 ```bash
-export SPTAG_AEROSPIKE_HOST=10.150.0.36
+export SPTAG_AEROSPIKE_HOST=10.150.0.34
 export SPTAG_AEROSPIKE_PORT=3000
 export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
 export SPTAG_AEROSPIKE_SET=sptag
-export SPTAG_AEROSPIKE_BIN=posting
+export SPTAG_AEROSPIKE_BIN=value
 export SPFRESH_BINARY=/app/Release/SPTAGTest
 export BENCHMARK_CONFIG=/app/benchmarks/benchmark.aerospike.nvme.ini
 export RESULTS_DIR=/app/results
@@ -769,13 +769,13 @@ rm -f perftest_vector.bin perftest_meta.bin perftest_metaidx.bin \
       perftest_query.bin perftest_batchtruth.*
 rm -rf proidx/spann_index_aero proidx/spann_index_aero_*
 
-export SPTAG_AEROSPIKE_HOST=10.150.0.36
+export SPTAG_AEROSPIKE_HOST=10.150.0.34
 export BENCHMARK_CONFIG=/app/benchmarks/benchmark.aerospike.nvme.ini
 export BENCHMARK_OUTPUT=/app/results/benchmark_aerospike.json
 export SPTAG_AEROSPIKE_PORT=3000
 export SPTAG_AEROSPIKE_NAMESPACE=sptag_data
 export SPTAG_AEROSPIKE_SET=sptag
-export SPTAG_AEROSPIKE_BIN=posting
+export SPTAG_AEROSPIKE_BIN=value
 
 mkdir -p /app/results /app/proidx/spann_index_aero
 
@@ -1070,6 +1070,7 @@ If `gcc` cannot find `lua.h` for 5.4, install `liblua5.4-dev` or adjust the `-I/
 Run the standalone harness before registration:
 
 ```bash
+cd SPTAG/AnnService/udf
 lua5.4 test_avx_math_local.lua
 # or: AVX_MATH_SO="$PWD/avx_math.so" lua5.4 test_avx_math_local.lua
 ```
@@ -1077,6 +1078,9 @@ lua5.4 test_avx_math_local.lua
 You should see only `[PASS] ...` lines. If the interpreter segfaults or throws, **do not** register that `.so` on the cluster.
 
 Register the compiled native module with `aql` from that same Aerospike node:
+### 6) Register both modules with `aql`
+
+Run these from the machine where `avx_math.so` and `sptag_posting.lua` exist. The safest form is to pass absolute paths that `aql` can open:
 
 ```bash
 aql -h "$SPTAG_AEROSPIKE_HOST" -c "register module '$(pwd)/avx_math.so'"
@@ -1100,9 +1104,9 @@ aql> register module 'sptag_posting.lua'
 
 The interactive form only works when `aql` was started from a directory containing the file being registered. If in doubt, use the absolute-path `-c` commands above.
 
-### 6) Confirm the cluster sees Lua + C together
+### 7) Confirm the cluster sees Lua + C together
 
-With your namespace, set, and a dummy key (any PK), run the UDF’s `init()` to confirm `avx_math` loaded:
+With your namespace, set, and a dummy key (any PK), run the UDF's `init()` to confirm `avx_math` loaded:
 
 ```bash
 aql -h "$SPTAG_AEROSPIKE_HOST" -c "execute sptag_posting.init() on sptag_data.sptag where pk='diag'"
