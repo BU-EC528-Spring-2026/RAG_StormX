@@ -117,14 +117,14 @@ The benchmark setup used:
 | Aerospike | Demonstrated distributed KV integration | Showed that SPTAG can run with a distributed KV backend, but performance depends on batching and request path design. |
 | TiKV | Useful distributed comparison point | Helped frame tradeoffs around stronger consistency, LSM-based storage, and distributed read overhead. |
 
-> Final numeric results should be placed here once we agree on the exact values to present. 
+> Final numeric results should be placed here once we agree on the exact values to present. (SIFT1M dataset) 
 >
 > | Backend | QPS | Mean Latency | Recall@K | Notes |
 > | --- | ---: | ---: | ---: | --- |
-> | FileIO | TBD | TBD | TBD | Local baseline |
-> | RocksDB | TBD | TBD | TBD | Embedded KV baseline |
+> | FileIO | 1209.18 | 13.11 | 0.84 | Local baseline |
+> | RocksDB | 2466.42 | 6.43 | 0.84 | Embedded KV baseline |
 > | Aerospike | TBD | TBD | TBD | Distributed KV experiment |
-> | TiKV | TBD | TBD | TBD | Distributed KV comparison |
+> | TiKV | 297.39 | 53.54 | 0.84 | Distributed KV comparison |
 
 ---
 
