@@ -1,57 +1,26 @@
 # Distributed KV Database for SPTAG
 
-Welcome to the project repository focused on building and integrating a distributed Key-Value (KV) database for SPTAG. (Here is our first [video demo](https://drive.google.com/file/d/1i-0wsOg0iPfVE9vz2vDpDfisrusYUJAf/view?usp=sharing).)
-Here is our [demo3 slides](https://docs.google.com/presentation/d/1tDpxalJ8GZXDQENHnX0TcBkUOgIK2lVbXCJuONbyl74/edit?usp=sharing).
+Welcome to the project repository focused on BUilding and Integrating Aerospike into SPTAG. 
 
 ## Index
 
-1. [Problem Statement](#1-problem-statement)
-2. [Current Progress](#2-current-progress)
-3. [Setup Guidance](#3-setup-guidance)
+1. [Setup Guidance](#1-setup-guidance)
    - [Build 3 Aerospike Nodes](#aerospike-3-node-cluster-on-gcp)
    - [Build 1 SPTAG Node](#setting-up-a-single-sptag-node)
    - [Run Aerospike benchmarks](#run-aerospike-benchmarks) *(server-side UDF modes require §6 first)*
      - [UDF search benchmarks: env or script](#udf-search-benchmarks-env-or-script)
-4. [Benchmarks](#4-benchmarks-aerospike-only)
-5. [Aerospike UDFs: design and current status](#5-aerospike-udfs-design-and-current-status)
-6. [Registering UDFs on remote Aerospike nodes](#6-registering-udfs-on-remote-aerospike-nodes) *(prerequisite for Packed / Pairs modes)*
+2. [Benchmarks](#2-benchmarks-aerospike-only)
+3. [Aerospike UDFs: design and current status](#3-aerospike-udfs-design-and-current-status)
+4. [Registering UDFs on remote Aerospike nodes](#4-registering-udfs-on-remote-aerospike-nodes) *(prerequisite for Packed / Pairs modes)*
 
 ---
-
-## 1) Problem Statement
-
-### What is SPTAG?
-
-[SPTAG](https://github.com/microsoft/SPTAG) (Space Partition Tree And Graph) is Microsoft's library for fast approximate nearest-neighbor (ANN) search in high-dimensional vector spaces (hundreds to thousands of dimensions).
-
-Traditional spatial data structures like quad-trees and oct-trees split on every dimension, causing the search space to explode exponentially. SPTAG avoids this **dimensionality curse** by using a **clustered balanced tree** whose branching factor stays small regardless of the number of dimensions. Once the tree narrows the search to an approximate region, SPTAG switches to a **Relative Neighborhood Graph** -- a graph where nearby vectors are connected -- and performs a greedy walk to find the closest match. This two-phase approach (tree descent + graph traversal) keeps both index size and query latency practical at billion-vector scale.
-
-### Why do we need a distributed KV store?
-
-SPTAG returns the *index* of the nearest vector, but something still needs to store and retrieve the actual content (embeddings, posting lists, metadata) that corresponds to each index. A naive in-memory dictionary fails for three reasons:
-
-1. **Scale** -- datasets can be hundreds of gigabytes; they do not fit in a single machine's RAM.
-2. **Persistence** -- an in-memory structure is lost on restart.
-3. **Concurrency** -- many concurrent readers cause lock contention on a single-process data structure.
-
-A distributed key-value database solves all three: data lives on SSD across multiple machines, survives restarts, and serves many readers in parallel.
-
 ### Why Aerospike?
 
 The vector-search workload is heavily **read-dominated** (many queries per write), so predictable read latency matters more than single-node strong consistency. Aerospike keeps a **primary index in DRAM** (each 64-byte entry points at the record’s on-disk location), so a lookup is a memory hit plus typically **one** storage read, without LSM-style level walks. The storage engine can use **direct I/O** on raw devices (for example local NVMe), which avoids double-buffering in the page cache and helps keep tail latency stable for large postings. This combination fits ANN serving where we need high QPS, bounded latency, and horizontal scale.
 
 ---
 
-## 2) Current Progress
-
-- **Current architecture (Aerospike):** Postings and related blobs are stored in **Aerospike** (clustered, NVMe-backed). We modify SPTAG to use the Aerospike C client and server-side UDF hooks where applicable. The code path is still an experimental proof-of-concept: the next focus is refactoring, clearer layering, and stability.
-- **Status:** SPTAG runs end-to-end on Aerospike, including the SPFresh benchmark driven from the SPTAG Docker image.
-- **Infrastructure:** We can stand up a **2-node Aerospike cluster** on GCP with a single deployment script, plus a dedicated SPTAG build/benchmark node with local NVMe for the dataset and index artifacts.
-- **Benchmarking:** Benchmarks use the [SIFT1B (BigANN)](https://big-ann-benchmarks.com/) dataset (typically a 100M-vector subset) with NVMe for local files and **Aerospike** for distributed KV. See [Benchmarks (Aerospike only)](#4-benchmarks-aerospike-only) and [Aerospike UDFs](#5-aerospike-udfs-design-and-current-status).
-
----
-
-## 3) Setup Guidance
+## 1) Setup Guidance
 
 ### Aerospike 3-Node Cluster on GCP
 
@@ -686,7 +655,7 @@ This should show you cmake outputs – it will throw some warnings, but some of 
 
 ---
 
-#### Run Aerospike benchmarks
+#### Run Aerospike 
 
 After the project is built, point the process at your Aerospike cluster. For **search-path UDF** benchmarks (server-side posting scoring: Off / Packed / Pairs), use either the environment variables below or the helper script [`SPTAG/benchmarks/run_aerospike_udf_ab.sh`](SPTAG/benchmarks/run_aerospike_udf_ab.sh).
 
