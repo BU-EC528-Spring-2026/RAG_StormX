@@ -778,7 +778,7 @@ Example:
 
 ---
 
-## 4) Benchmarks (Aerospike only)
+## 2) Benchmarks (Aerospike only)
 
 This section covers preparing the SIFT1B (BigANN) data on NVMe and running the **Aerospike**-backed benchmark. It assumes you completed [Setup Guidance](#3-setup-guidance) (Aerospike cluster running, SPTAG image built, repo cloned, dataset paths aligned with your `benchmark.aerospike.nvme.ini` or the copy under `benchmarks/` in the image).
 
@@ -949,7 +949,7 @@ To benchmark at larger scale, edit the config files in `benchmarks/` and adjust 
 
 ---
 
-## 5) Aerospike UDFs: design and current status
+## 3) Aerospike UDFs: design and current status
 
 SPTAG can push parts of the SPANN posting read path into **Aerospike server-side UDFs** (Lua in `SPTAG/AnnService/udf/sptag_posting.lua`, optionally accelerated by a small AVX C module `avx_math.so`). The full build, deploy, and troubleshooting story is in [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md). To **compile, test locally, and install** those files on your cluster, follow [Registering UDFs on remote Aerospike nodes](#6-registering-udfs-on-remote-aerospike-nodes). In practice there are two different “UDF” topics:
 
@@ -967,7 +967,7 @@ A short structured summary of the same comparison is in [`results/benchmark_comp
 
 ---
 
-## 6) Registering UDFs on remote Aerospike nodes
+## 4) Registering UDFs on remote Aerospike nodes
 
 Search-path UDFs use two kinds of files under [`SPTAG/AnnService/udf/`](SPTAG/AnnService/udf/): the **Lua** module [`sptag_posting.lua`](SPTAG/AnnService/udf/sptag_posting.lua) (UDF entry points) and a **C** extension built from [`avx.math.c`](SPTAG/AnnService/udf/avx.math.c) into a shared library `avx_math.so` that Lua loads with `require "avx_math"`. The file [`test_avx_math_local.lua`](SPTAG/AnnService/udf/test_avx_math_local.lua) is a **client-side** smoke test only: it is not registered on Aerospike; use it to prove the compiled `.so` is safe before you copy it to servers.
 
