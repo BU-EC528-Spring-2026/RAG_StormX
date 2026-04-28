@@ -2,8 +2,9 @@
 # -----------------------------------------------------------------------------
 # Aerospike client policy sweep for SPTAG SPFresh benchmarks.
 #
-# Runs the Dockerized SPTAG benchmark once per Aerospike client-policy profile
-# and writes one JSON/log pair per profile for side-by-side comparison.
+# Runs the SPTAG benchmark once per Aerospike client-policy profile and writes
+# one JSON/log pair per profile for side-by-side comparison. The script can run
+# either inside the SPTAG Docker image or from the host by spawning Docker.
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
@@ -13,7 +14,14 @@ RESULTS_ROOT="${RESULTS_DIR:-${ROOT}/results/aerospike_policy_sweep}"
 RUN_TAG="${RUN_TAG:-$(date -u +%Y%m%dT%H%M%SZ)}"
 OUT_DIR="${RESULTS_ROOT}/${RUN_TAG}"
 
-BENCHMARK_CONFIG_IN_CONTAINER="${BENCHMARK_CONFIG_IN_CONTAINER:-/work/SPTAG/benchmarks/benchmark.aerospike.nvme.ini}"
+SPFRESH_BINARY="${SPFRESH_BINARY:-/app/Release/SPTAGTest}"
+if [[ -x "$SPFRESH_BINARY" ]]; then
+    RUNNER_MODE="${RUNNER_MODE:-direct}"
+    BENCHMARK_CONFIG_IN_CONTAINER="${BENCHMARK_CONFIG_IN_CONTAINER:-${BENCHMARK_CONFIG:-/app/benchmarks/benchmark.aerospike.nvme.ini}}"
+else
+    RUNNER_MODE="${RUNNER_MODE:-docker}"
+    BENCHMARK_CONFIG_IN_CONTAINER="${BENCHMARK_CONFIG_IN_CONTAINER:-${BENCHMARK_CONFIG:-/work/SPTAG/benchmarks/benchmark.aerospike.nvme.ini}}"
+fi
 WORKSPACE_HOST="${WORKSPACE_HOST:-/home/Zhakh/RAG_StormX}"
 WORKSPACE_CONTAINER="${WORKSPACE_CONTAINER:-/work}"
 
@@ -40,7 +48,9 @@ PROFILES=(
 )
 
 echo "=== Aerospike policy sweep ==="
+echo "  mode:         $RUNNER_MODE"
 echo "  image:        $IMAGE"
+echo "  binary:       $SPFRESH_BINARY"
 echo "  host:         $SPTAG_AEROSPIKE_HOST:$SPTAG_AEROSPIKE_PORT"
 echo "  namespace:    $SPTAG_AEROSPIKE_NAMESPACE"
 echo "  set/bin:      $SPTAG_AEROSPIKE_SET/$SPTAG_AEROSPIKE_BIN"
@@ -61,25 +71,47 @@ for profile in "${PROFILES[@]}"; do
     echo "    output=$out_json_host"
     echo "=============================================================="
 
-    sudo docker run --rm --net=host \
-        -e BENCHMARK_CONFIG="$BENCHMARK_CONFIG_IN_CONTAINER" \
-        -e BENCHMARK_OUTPUT="$out_json_ctr" \
-        -e SPTAG_AEROSPIKE_HOST="$SPTAG_AEROSPIKE_HOST" \
-        -e SPTAG_AEROSPIKE_PORT="$SPTAG_AEROSPIKE_PORT" \
-        -e SPTAG_AEROSPIKE_NAMESPACE="$SPTAG_AEROSPIKE_NAMESPACE" \
-        -e SPTAG_AEROSPIKE_SET="$SPTAG_AEROSPIKE_SET" \
-        -e SPTAG_AEROSPIKE_BIN="$SPTAG_AEROSPIKE_BIN" \
-        -e SPTAG_AEROSPIKE_MAX_CONNS_PER_NODE="$max_conns" \
-        -e SPTAG_AEROSPIKE_CONN_POOLS_PER_NODE="$conn_pools" \
-        -e SPTAG_AEROSPIKE_THREAD_POOL_SIZE="$thread_pool" \
-        -e SPTAG_AEROSPIKE_MIN_CONNS_PER_NODE="$min_conns" \
-        -e SPTAG_AEROSPIKE_MAX_SOCKET_IDLE="$max_socket_idle" \
-        -v "${WORKSPACE_HOST}:${WORKSPACE_CONTAINER}" \
-        -v /mnt/nvme:/mnt/nvme \
-        -v /mnt/nvme0:/mnt/nvme0 \
-        -v /mnt/nvme1:/mnt/nvme1 \
-        "$IMAGE" bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig' 2>&1 \
-        | tee "$out_log_host"
+    if [[ "$RUNNER_MODE" == "direct" ]]; then
+        BENCHMARK_CONFIG="$BENCHMARK_CONFIG_IN_CONTAINER" \
+        BENCHMARK_OUTPUT="$out_json_host" \
+        SPTAG_AEROSPIKE_HOST="$SPTAG_AEROSPIKE_HOST" \
+        SPTAG_AEROSPIKE_PORT="$SPTAG_AEROSPIKE_PORT" \
+        SPTAG_AEROSPIKE_NAMESPACE="$SPTAG_AEROSPIKE_NAMESPACE" \
+        SPTAG_AEROSPIKE_SET="$SPTAG_AEROSPIKE_SET" \
+        SPTAG_AEROSPIKE_BIN="$SPTAG_AEROSPIKE_BIN" \
+        SPTAG_AEROSPIKE_MAX_CONNS_PER_NODE="$max_conns" \
+        SPTAG_AEROSPIKE_CONN_POOLS_PER_NODE="$conn_pools" \
+        SPTAG_AEROSPIKE_THREAD_POOL_SIZE="$thread_pool" \
+        SPTAG_AEROSPIKE_MIN_CONNS_PER_NODE="$min_conns" \
+        SPTAG_AEROSPIKE_MAX_SOCKET_IDLE="$max_socket_idle" \
+        "$SPFRESH_BINARY" --run_test=SPFreshTest/BenchmarkFromConfig --log_level=test_suite 2>&1 \
+            | tee "$out_log_host"
+    else
+        DOCKER=(docker)
+        if [[ "${USE_SUDO:-1}" != "0" ]] && command -v sudo >/dev/null 2>&1; then
+            DOCKER=(sudo docker)
+        fi
+
+        "${DOCKER[@]}" run --rm --net=host \
+            -e BENCHMARK_CONFIG="$BENCHMARK_CONFIG_IN_CONTAINER" \
+            -e BENCHMARK_OUTPUT="$out_json_ctr" \
+            -e SPTAG_AEROSPIKE_HOST="$SPTAG_AEROSPIKE_HOST" \
+            -e SPTAG_AEROSPIKE_PORT="$SPTAG_AEROSPIKE_PORT" \
+            -e SPTAG_AEROSPIKE_NAMESPACE="$SPTAG_AEROSPIKE_NAMESPACE" \
+            -e SPTAG_AEROSPIKE_SET="$SPTAG_AEROSPIKE_SET" \
+            -e SPTAG_AEROSPIKE_BIN="$SPTAG_AEROSPIKE_BIN" \
+            -e SPTAG_AEROSPIKE_MAX_CONNS_PER_NODE="$max_conns" \
+            -e SPTAG_AEROSPIKE_CONN_POOLS_PER_NODE="$conn_pools" \
+            -e SPTAG_AEROSPIKE_THREAD_POOL_SIZE="$thread_pool" \
+            -e SPTAG_AEROSPIKE_MIN_CONNS_PER_NODE="$min_conns" \
+            -e SPTAG_AEROSPIKE_MAX_SOCKET_IDLE="$max_socket_idle" \
+            -v "${WORKSPACE_HOST}:${WORKSPACE_CONTAINER}" \
+            -v /mnt/nvme:/mnt/nvme \
+            -v /mnt/nvme0:/mnt/nvme0 \
+            -v /mnt/nvme1:/mnt/nvme1 \
+            "$IMAGE" bash -lc 'cd /work && /app/Release/SPTAGTest --run_test=SPFreshTest/BenchmarkFromConfig --log_level=test_suite' 2>&1 \
+            | tee "$out_log_host"
+    fi
 
     echo "--- Done profile: $name"
     echo
