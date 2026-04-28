@@ -543,7 +543,7 @@ In the Google Cloud Shell (press G and S in the google cloud VM-instance window)
 # 1. Provision the GCP Instance
 gcloud compute instances create sptag-node \
     --zone=us-east4-b \
-    --machine-type=c2-standard-8 \
+    --machine-type=c2-standard-4 \
     --subnet=default \
     --tags=http-server,https-server \
     --create-disk=auto-delete=yes,boot=yes,size=250GB,type=pd-standard,image-family=ubuntu-2404-lts-amd64,image-project=ubuntu-os-cloud \
