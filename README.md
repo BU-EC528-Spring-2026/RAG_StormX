@@ -587,7 +587,7 @@ sudo systemctl start docker
 # 2. Clone the Repository (with submodules)
 # You will need to authenticate with GitHub!!!!! We will that as an excercise to the reader :) 
 # (Just add an ssh key :^) )
-git clone --recursive https://github.com/BU-EC528-Spring-2026/RAG_StormX.git
+git clone --recursive -b aerospike-udf https://github.com/BU-EC528-Spring-2026/RAG_StormX.git
 cd RAG_StormX/SPTAG
 
 # 3. Build and Run the Docker Image
