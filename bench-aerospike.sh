@@ -55,9 +55,9 @@ ask() {
 confirm() {
   local prompt="$1" default="${2:-Y}" reply
   if [[ "$default" =~ ^[Yy]$ ]]; then
-    read -r -p "${prompt} [Y/n]: " reply; reply="${reply:-Y}"
+    read -r -p "${prompt} [Y/n] (Enter=Yes): " reply; reply="${reply:-Y}"
   else
-    read -r -p "${prompt} [y/N]: " reply; reply="${reply:-N}"
+    read -r -p "${prompt} [y/N] (Enter=No): " reply; reply="${reply:-N}"
   fi
   [[ "$reply" =~ ^[Yy] ]]
 }
@@ -84,6 +84,8 @@ SPTAG_NODE="${SPTAG_NODE:-sptag-node}"
 AEROSPIKE_URL="${AEROSPIKE_URL:-https://download.aerospike.com/artifacts/aerospike-server-community/8.1.1.1/aerospike-server-community_8.1.1.1_tools-12.1.1_ubuntu24.04_x86_64.tgz}"
 AEROSPIKE_DIR="${AEROSPIKE_DIR:-aerospike-server-community_8.1.1.1_tools-12.1.1_ubuntu24.04_x86_64}"
 SPTAG_UDF_MODE="${SPTAG_AEROSPIKE_UDF_MODE:-0}"  # 0=Off (default), 1=Packed, 2=Pairs
+GIT_BRANCH="${GIT_BRANCH:-aerospike-udf}"        # main has a buggy posting write path; aerospike-udf is the working branch
+GIT_REPO="${GIT_REPO:-https://github.com/BU-EC528-Spring-2026/RAG_StormX.git}"
 
 AS_NODE1_IP=""; AS_NODE2_IP=""; AS_NODE3_IP=""
 
@@ -611,8 +613,13 @@ setup_sptag_node() {
   cat <<EOF
 On the SPTAG VM:
   • apt-get install build deps + Docker + axel
-  • git clone --recursive RAG_StormX
+  • git clone --recursive --branch $GIT_BRANCH RAG_StormX
   • docker build -t sptag .  (≈ 10-15 min on first build)
+
+NOTE: We checkout the '$GIT_BRANCH' branch, NOT main. Main's Aerospike
+posting write path has a known bug that drops recall@10 from ~0.84 to
+~0.20 across insert batches. The aerospike-udf branch fixes this and
+also ships proper Aerospike connection-pool tuning in the .ini.
 
 Don't worry if the docker build prints red warning lines — those come
 from the SPTAG codebase (and a couple of unused-method warnings we
@@ -630,15 +637,22 @@ EOF
 
     cd ~
     if [ ! -d RAG_StormX ]; then
-      git clone --recursive https://github.com/BU-EC528-Spring-2026/RAG_StormX.git
+      echo 'Cloning $GIT_REPO (branch: $GIT_BRANCH)...'
+      git clone --recursive --branch '$GIT_BRANCH' '$GIT_REPO'
     else
-      echo 'RAG_StormX already cloned, skipping clone.'
+      echo 'RAG_StormX already cloned; making sure it is on $GIT_BRANCH branch...'
+      cd RAG_StormX
+      git fetch --all --quiet
+      git checkout '$GIT_BRANCH'
+      git pull --quiet
+      git submodule update --init --recursive --quiet
+      cd ~
     fi
 
     cd ~/RAG_StormX/SPTAG
     sudo docker build -t sptag .
   "
-  ok "SPTAG image built on $SPTAG_NODE."
+  ok "SPTAG image built on $SPTAG_NODE (branch: $GIT_BRANCH)."
 }
 
 format_nvme_sptag() {
@@ -772,14 +786,17 @@ run_benchmark() {
 
   cat <<EOF
 Benchmark settings:
-  SPTAG_AEROSPIKE_HOST       = $AS_NODE1_IP  (any AS node IP works)
-  SPTAG_AEROSPIKE_PORT       = 3000
-  SPTAG_AEROSPIKE_NAMESPACE  = $NAMESPACE_NAME
-  SPTAG_AEROSPIKE_SET        = sptag
-  SPTAG_AEROSPIKE_BIN        = value
+  Branch                     = $GIT_BRANCH (uses SPTAG/benchmarks/benchmark.aerospike.nvme.ini)
+  SPTAG_AEROSPIKE_HOST       = $AS_NODE1_IP  (overrides .ini's hardcoded host)
   SPTAG_AEROSPIKE_UDF_MODE   = $SPTAG_UDF_MODE  $([[ "$SPTAG_UDF_MODE" == "0" ]] && echo "(Off — bulk read path)" || echo "(REQUIRES UDF DEPLOYED!)")
   BENCHMARK_CONFIG           = /work/benchmarks/benchmark.aerospike.nvme.ini
   BENCHMARK_OUTPUT           = /mnt/nvme/sptag_bench/output_aerospike.json
+
+The aerospike-udf branch's .ini ships an [Aerospike] section that
+controls Port / Namespace / Set / Bin and connection-pool tuning
+(MaxConnsPerNode, ConnPoolsPerNode, ThreadPoolSize, etc.). We only
+inject HOST as an env var; everything else comes from the .ini, which
+matches what gives recall@10 ≈ 0.84.
 
 Running inside the sptag Docker container with:
   -v ~/RAG_StormX/SPTAG:/work
@@ -787,27 +804,33 @@ Running inside the sptag Docker container with:
   --net=host  (so the client can reach Aerospike on the VPC)
 
 ⚠ Default 1M-vector scale takes ~5 min; ground-truth computation adds
-  extra time on the first run.
+  extra time on the first run. We also wipe any prior on-disk SPANN
+  index so Rebuild=true starts truly fresh — important if you ran a
+  previous (broken) benchmark on this VM.
 EOF
   pause
 
   gcloud compute ssh "$SPTAG_NODE" --zone="$ZONE" --command "
     set -e
-    cd ~/RAG_StormX/SPTAG
-    rm -f perftest_vector.bin perftest_meta.bin perftest_metaidx.bin \
-      perftest_addvector.bin perftest_addmeta.bin perftest_addmetaidx.bin \
-      perftest_query.bin perftest_batchtruth.* 2>/dev/null || true
-    rm -rf proidx/spann_index_aero proidx/spann_index_aero_* 2>/dev/null || true
+    # Clear perftest artifacts from BOTH possible cwd locations (different
+    # branches may have invoked SPTAG from different directories).
+    for d in ~/RAG_StormX ~/RAG_StormX/SPTAG; do
+      if [ -d \"\$d\" ]; then
+        ( cd \"\$d\" && \
+          rm -f perftest_vector.bin perftest_meta.bin perftest_metaidx.bin \
+                perftest_addvector.bin perftest_addmeta.bin perftest_addmetaidx.bin \
+                perftest_query.bin perftest_batchtruth.* 2>/dev/null || true
+          rm -rf proidx/spann_index_aero proidx/spann_index_aero_* 2>/dev/null || true )
+      fi
+    done
+    # Wipe any prior on-disk SPANN index so Rebuild=true starts truly fresh.
+    rm -rf /mnt/nvme/sptag_bench/spann_index_aerospike* 2>/dev/null || true
     mkdir -p /mnt/nvme/sptag_bench
 
     sudo docker run --rm --net=host \
       -e BENCHMARK_CONFIG=/work/benchmarks/benchmark.aerospike.nvme.ini \
       -e BENCHMARK_OUTPUT=/mnt/nvme/sptag_bench/output_aerospike.json \
       -e SPTAG_AEROSPIKE_HOST=$AS_NODE1_IP \
-      -e SPTAG_AEROSPIKE_PORT=3000 \
-      -e SPTAG_AEROSPIKE_NAMESPACE=$NAMESPACE_NAME \
-      -e SPTAG_AEROSPIKE_SET=sptag \
-      -e SPTAG_AEROSPIKE_BIN=value \
       -e SPTAG_AEROSPIKE_UDF_MODE=$SPTAG_UDF_MODE \
       -v ~/RAG_StormX/SPTAG:/work \
       -v /mnt/nvme:/mnt/nvme \
