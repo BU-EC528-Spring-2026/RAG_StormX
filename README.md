@@ -661,7 +661,7 @@ This should show you cmake outputs – it will throw some warnings, but some of 
 This section covers preparing the SIFT1B (BigANN) data on NVMe and running the **Aerospike**-backed benchmark. It assumes you completed [Setup Guidance](#1-setup-guidance): the Aerospike cluster is running, the SPTAG image is built, the repo is cloned, and dataset paths match `benchmark.aerospike.nvme.ini` or the copy under `benchmarks/` in the image.
 
 > [!WARNING]
-> The benchmark workflow involves downloading a **119 GB** dataset and running compute-intensive index builds. Budget at least **30 minutes** for setup and **5 minutes per benchmark run** at the default 1M-vector scale. Larger scales can take hours (see [Scaling Up](#scaling-up) below). Consider running long downloads and benchmarks inside a `tmux` or `screen` session so they survive SSH disconnects.
+> The benchmark workflow involves downloading a **119 GB** dataset and running compute-intensive index builds. Budget at least **30 minutes** for setup and **5 minutes per benchmark run** at the default 1M-vector scale. Consider running long downloads and benchmarks inside a `tmux` or `screen` session so they survive SSH disconnects.
 
 ### Prepare NVMe Storage
 
@@ -787,29 +787,13 @@ ulimit -n 65535
 
 Set `SPTAG_AEROSPIKE_HOST` to a reachable Aerospike node's internal IP. Results are written under `$RESULTS_DIR/<timestamp>/`, including `benchmark_aerospike_policy_<profile>.json`, matching `.log` files, and `summary.txt`.
 
-### Scaling Up
-
-To benchmark at larger scale, edit the config files in `benchmarks/` and adjust the parameters below. Keep in mind that larger runs require significantly more RAM and time:
-
-
-| Scale        | BaseVectorCount | InsertVectorCount | BatchNum | Expected RAM | Expected Time |
-| ------------ | --------------- | ----------------- | -------- | ------------ | ------------- |
-| 1M (default) | 100,000         | 900,000           | 9        | ~4 GB        | ~5 min        |
-| 10M          | 1,000,000       | 9,000,000         | 9        | ~16 GB       | ~1 hour       |
-| 100M         | 10,000,000      | 90,000,000        | 9        | ~64 GB       | ~12+ hours    |
-
-
-> [!WARNING]
-> At the 100M scale, expect runs to take **12+ hours** and require at least **64 GB of RAM**. Make sure your SPTAG VM has enough resources and that the benchmark is running inside a `tmux` or `screen` session.
-
----
 
 ## 3) Aerospike UDFs: design and current status
 
 SPTAG can push parts of the SPANN posting read path into **Aerospike server-side UDFs** (Lua in [`SPTAG/AnnService/udf/sptag_posting.lua`](SPTAG/AnnService/udf/sptag_posting.lua), optionally accelerated by a small AVX C module `avx_math.so`). The full build, registration, and troubleshooting story is in [`SPTAG/AnnService/udf/README.md`](SPTAG/AnnService/udf/README.md). To **compile, test, and register** those files on your cluster, follow [Registering UDFs on remote Aerospike nodes](#4-registering-udfs-on-remote-aerospike-nodes). In practice there are two different “UDF” topics:
 
 1. **Search UDF mode (`AerospikeUDFMode`)** — `run_aerospike_udf_ab.sh` compares **Off** vs **Pairs** (and optional **Packed**) for batch scoring on the server. This path depends on a modern Aerospike client/server, `avx_math.so` compiled and registered from an Aerospike node, and matching Lua 5.4 ABI; otherwise you see slow Lua fallbacks, timeouts, or `require` errors (see the UDF README).
-2. **Experimental posting pipeline flags** — separate from the A/B script, the client can enable **filtered read** and **merge** UDFs for posting access and `MergePostings` updates. The checked-in benchmark artifacts show how these behaved on the same 1M-vector SPFresh run (SIFT 100M subset, UInt8 L2, 16 threads, 1000 queries):
+2. **Wrong, uncompleted Merge UDFs** — separate from the A/B script, the client can enable **filtered read** and **merge** UDFs for posting access and `MergePostings` updates. This was not implemented fully!
 
 
 | Artifact                                                                                             | What it tests                                    | What happened                                                                                                                                                                                                                                 |
@@ -819,7 +803,7 @@ SPTAG can push parts of the SPANN posting read path into **Aerospike server-side
 | [`results/output_aerospike_udf_merge_only.json`](results/output_aerospike_udf_merge_only.json)       | **Merge** UDF for posting updates only.          | **Correctness failure:** first batch search recall collapses to **~0.04** and drifts to **~0.0075** by batch 9 even though Latency looks fast — the merge path **corrupts or mis-assembles** posting blobs during inserts.                    |
 
 
-A short structured summary of the same comparison is in [`results/benchmark_comparison_summary.json`](results/benchmark_comparison_summary.json). **Bottom line:** the experimental merge-style UDFs are not production-ready until the posting merge semantics are fixed; the filtered-read path is mainly a **latency regression** for this workload. Use the search-path UDF A/B script documented in [Run UDF benchmarks](#7-run-udf-benchmarks).
+A short structured summary of the same comparison is in [`results/benchmark_comparison_summary.json`](results/benchmark_comparison_summary.json). **Bottom line:** the experimental merge-style UDFs are not ready until the posting merge semantics are fixed; the filtered-read path is a **latency regression** for this workload, due to a Lua engine state limit (Aerospike implementation specific for stablity reasons). Use the search-path UDF A/B script documented in [Run UDF benchmarks](#7-run-udf-benchmarks).
 
 ---
 
