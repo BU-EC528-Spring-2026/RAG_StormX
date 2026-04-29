@@ -13,6 +13,7 @@ Welcome to the project repository focused on building and integrating Aerospike 
 3. [Aerospike UDFs: design and current status](#3-aerospike-udfs-design-and-current-status)
 4. [Registering UDFs on remote Aerospike nodes](#4-registering-udfs-on-remote-aerospike-nodes) *(prerequisite for Packed / Pairs modes)*
   - [Run UDF benchmarks](#7-run-udf-benchmarks)
+5. [Automated End-to-End Benchmark](#5-automated-end-to-end-benchmark) — one-command pipeline that runs steps 1–2 automatically
 
 ---
 
@@ -977,3 +978,63 @@ cd /app
 ```
 
 The script writes one JSON plus one log per mode under `RESULTS_DIR`.
+
+
+
+---
+
+## 5) Automated End-to-End Benchmark
+
+Instead of running each section above manually, you can execute the entire pipeline — cluster deployment, SPTAG node setup, dataset download, and the policy sweep benchmark — with a single command from **Google Cloud Shell**.
+
+The workflow is split into three composable scripts:
+
+| Script | What it does |
+| ------ | ------------ |
+| `deploy-aerospike.sh` | Creates 3 GCP VMs, installs Aerospike, forms a 3-node mesh cluster |
+| `setup-sptag.sh` | Creates the SPTAG compute node, mounts NVMe, downloads SIFT1B, clones the repo, builds the Docker image, and recompiles SPTAG with the Aerospike node IP |
+| `run_aerospike_policy_sweep.sh` | Sweeps 5 client-policy profiles inside Docker and produces a comparison report |
+
+A master script, `bench-e2e.sh`, chains all three together with interactive prompts (press Enter to advance each step).
+
+### E2E Prerequisites
+
+- A GCP project with billing enabled and Compute Engine API active.
+- Google Cloud Shell (or a machine with `gcloud` installed and authenticated).
+- The current project must be set: `gcloud config set project YOUR_PROJECT_ID`, or Cloud Shell auto-detects it from `$GOOGLE_CLOUD_PROJECT`.
+
+### Quick Start
+
+**Run in Google Cloud Shell:**
+
+```bash
+chmod +x bench-e2e.sh deploy-aerospike.sh setup-sptag.sh run_aerospike_policy_sweep.sh
+./bench-e2e.sh
+```
+
+The script will prompt before each major step. Press Enter to proceed. All resource creation is **idempotent** — if a VM, firewall rule, NVMe mount, or dataset file already exists, it is skipped rather than recreated or overwritten.
+
+### What Happens
+
+1. **Step 1 — `deploy-aerospike.sh`**: Creates 3 `n2-standard-4` VMs with local NVMe SSDs, installs Aerospike via startup scripts, updates all nodes to a full mesh topology, and verifies the cluster with `asadm`.
+2. **Step 2 — `setup-sptag.sh`** (7 interactive sub-steps):
+   - **2a** Create the SPTAG VM (`c2-standard-8`, 250 GB boot disk + NVMe SSD)
+   - **2b** Install dependencies (git, Docker, cmake, axel, ...)
+   - **2c** Format and mount NVMe at `/mnt/nvme`
+   - **2d** Download SIFT1B dataset (~119 GB base vectors, plus query and ground-truth files)
+   - **2e** Extract 100M-vector subset (~12 GB)
+   - **2f** Clone the repo and build the SPTAG Docker image
+   - **2g** Rebuild SPTAG inside Docker with `-DAEROSPIKE_DEFAULT_HOST=<auto-detected IP>`
+3. **Step 3 — `run_aerospike_policy_sweep.sh`**: Runs SPFresh benchmarks under 5 Aerospike client configurations (`conservative`, `current`, `high_concurrency`, `larger_pool`, `low_idle`) and outputs per-profile JSON, logs, and a `summary.txt` comparing QPS, P99, and mean latency.
+
+Results are copied back to Cloud Shell at the end.
+
+### Cleanup
+
+To tear down all resources created by the pipeline:
+
+```bash
+gcloud compute instances delete aerospike-node-1 aerospike-node-2 aerospike-node-3 sptag-node --zone us-east4-b
+gcloud compute firewall-rules delete aerospike-internal
+```
+
