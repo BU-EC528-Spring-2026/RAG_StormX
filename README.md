@@ -786,6 +786,7 @@ ulimit -n 65535
 ```
 
 Set `SPTAG_AEROSPIKE_HOST` to a reachable Aerospike node's internal IP. Results are written under `$RESULTS_DIR/<timestamp>/`, including `benchmark_aerospike_policy_<profile>.json`, matching `.log` files, and `summary.txt`.
+Our results are that as the batch grows, conservative policy seems to outperform what seems to be better policies (warm TCP connection pool, high thread system, etc.) We are currently unsure what causes this, and this would require further analysis, however, it is clear that the more demanding policies are thrashing the system as the dataset grows (e.g. memory swapping to accomodate for the TCP pool / threads context switching / cache misses) 
 
 
 ## 3) Aerospike UDFs: design and current status
