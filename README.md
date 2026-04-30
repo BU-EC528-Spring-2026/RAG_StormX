@@ -28,6 +28,9 @@ gcloud compute instances create sptag-node \
 ## Prepare the SPTAG VM and Docker Environment
 
 Then SSH into the provisioned VM, and run the following:
+SSH into SPTAG node:
+
+```gcloud compute ssh sptag-node --zone us-east4-b```
 
 > [!NOTE]
 > When you get to the Docker Build Phase, do not worry about the red text - those are warnings that came along with the SPTAG codebase. We also have unused methods which cause warnings, but they do not affect the ability of the code to run.
