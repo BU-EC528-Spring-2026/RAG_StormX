@@ -8,6 +8,7 @@ This main branch is intended to serve as the **project overview and final docume
 
 - [Video Demo 1](https://drive.google.com/file/d/1i-0wsOg0iPfVE9vz2vDpDfisrusYUJAf/view?usp=sharing)
 - [Video Demo 2](https://drive.google.com/file/d/1Qjj-PX5dkWIvpudbBmp3PT15rgMjaVBZ/view?usp=sharing)
+- [Final Video demo- complete guid](https://drive.google.com/file/d/1SUSC7lx1FgxmBtHYBH_o1mtLxmDPPEph/view?usp=drivesdk)
 - [Demo 3 Slides](https://docs.google.com/presentation/d/1tDpxalJ8GZXDQENHnX0TcBkUOgIK2lVbXCJuONbyl74/edit?usp=sharing)
 - [Final Demo Slides](https://docs.google.com/presentation/d/1WhShUvGfNcFhBS8wZ76EZeJvH3MpQtOolj9kGcOfCoU/edit?usp=sharing)
 
