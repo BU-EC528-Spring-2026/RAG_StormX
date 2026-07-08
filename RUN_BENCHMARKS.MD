@@ -227,8 +227,8 @@ Configuration: 100k base vectors, 9 batches of 100k inserts (total 1M vectors), 
 | Initial QPS (100k vectors)         | 2,429         | 9,612          | 5,823                   |
 | Initial recall@10                  | 0.807         | 0.807          | 0.807                   |
 | Final QPS (1M vectors)             | 1,196         | 2,927          | 2,872                   |
-| Final p50 latency (us)             | 12.52         | 5.62           | 5.26                    |
-| Final p99 latency (us)             | 32.18         | 12.14          | 10.12                   |
+| Final p50 latency (ms)             | 12.52         | 5.62           | 5.26                    |
+| Final p99 latency (ms)             | 32.18         | 12.14          | 10.12                   |
 | Final recall@10                    | 0.841         | 0.841          | 0.841                   |
 | Insert throughput (vec/s, batch 9) | 5,661         | 6,758          | 6,822                   |
 
@@ -237,7 +237,7 @@ Configuration: 100k base vectors, 9 batches of 100k inserts (total 1M vectors), 
 
 - Recall is identical across all three backends (~0.807 at 100k, ~0.841 at 1M) -- this is expected since the head index and search algorithm are the same; only the posting storage differs.
 - RocksDB on NVMe delivers the best initial QPS (9,612) and maintains good performance as the index grows.
-- Aerospike shows the tightest latency distribution (p99 = 10.12 us at 1M vectors) despite going over the network, with comparable throughput to local RocksDB.
+- Aerospike shows the tightest latency distribution (p99 = 10.12 ms at 1M vectors) despite going over the network, with comparable throughput to local RocksDB. (Sanity check on units: 16 threads / 2,872 QPS ≈ 5.6 ms per query, matching the ~5.26 ms p50 — these are milliseconds, not microseconds.)
 - FileIO has higher latency and lower QPS, likely due to the async block-based file I/O overhead vs RocksDB's optimized LSM tree.
 
 ### Full JSON results

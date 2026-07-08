@@ -1,14 +1,37 @@
-# RAG_StormX: Distributed KV Storage for SPTAG-Based RAG Workloads
+# RAG_StormX: A Distributed KV Backend for SPTAG Disk-ANN Serving
 
-RAG_StormX is a final project exploring how distributed key-value (KV) storage can support large-scale approximate nearest-neighbor (ANN) search for retrieval-augmented generation (RAG) workloads. The project builds around [SPTAG](https://github.com/microsoft/SPTAG), Microsoft's ANN search library, and investigates how different storage backends affect scalability, latency, throughput, and deployment complexity.
+**TL;DR — We added a distributed key-value store (Aerospike) as a pluggable
+posting-store backend for [Microsoft SPTAG](https://github.com/microsoft/SPTAG)'s
+SPFresh disk-ANN engine, then benchmarked it head-to-head against local FileIO
+and embedded RocksDB on 1M BigANN/SIFT vectors. Result: the networked KV store
+matched local RocksDB on throughput and beat it on tail latency, while both
+outperformed the file-I/O baseline — at identical recall.**
 
-This main branch is intended to serve as the **project overview and final documentation hub**. Backend-specific implementation details, setup commands, and experiments are kept in separate branches or supporting documentation so that the main branch stays clean and easy to understand.
+| Metric (1M vectors, final batch) | FileIO (NVMe) | RocksDB (NVMe) | **Aerospike (distributed)** |
+| --- | ---: | ---: | ---: |
+| **p99 search latency (ms)** | 32.18 | 12.14 | **10.12** |
+| p50 search latency (ms) | 12.52 | 5.62 | **5.26** |
+| Search QPS | 1,196 | 2,927 | 2,872 |
+| Insert throughput (vec/s, batch 9) | 5,661 | 6,758 | 6,822 |
+| Build time (s) | 83.2 | 46.8 | 45.2 |
+| recall@10 | 0.841 | 0.841 | 0.841 |
+
+*Setup: SIFT/BigANN subset, 100k base vectors + 900k inserts (9 batches),
+1,000 queries per round, 16 search threads, TopK=10, L2, recall@10 against
+brute-force ground truth. Measured 2026-04-08 on GCP with NVMe-backed storage;
+full run log and reproduction steps in [RUN_BENCHMARKS.MD](./RUN_BENCHMARKS.MD).
+Recall is identical across backends by design — the SPTAG head index and search
+parameters are held constant so the posting store is the only variable.*
+
+A separate TiKV comparison run (same config, see
+[Section 5](#5-results)) measured 297 QPS at 53.5 ms mean latency — the cost of
+transactional consistency and gRPC coordination on this read path.
 
 ## Project Links
 
 - [Video Demo 1](https://drive.google.com/file/d/1i-0wsOg0iPfVE9vz2vDpDfisrusYUJAf/view?usp=sharing)
 - [Video Demo 2](https://drive.google.com/file/d/1Qjj-PX5dkWIvpudbBmp3PT15rgMjaVBZ/view?usp=sharing)
-- [Final Video demo- complete guide](https://drive.google.com/file/d/1SUSC7lx1FgxmBtHYBH_o1mtLxmDPPEph/view?usp=drivesdk)
+- [Final Video Demo — complete guide](https://drive.google.com/file/d/1SUSC7lx1FgxmBtHYBH_o1mtLxmDPPEph/view?usp=drivesdk)
 - [Demo 3 Slides](https://docs.google.com/presentation/d/1tDpxalJ8GZXDQENHnX0TcBkUOgIK2lVbXCJuONbyl74/edit?usp=sharing)
 - [Final Demo Slides](https://docs.google.com/presentation/d/1WhShUvGfNcFhBS8wZ76EZeJvH3MpQtOolj9kGcOfCoU/edit?usp=sharing)
 
@@ -19,194 +42,162 @@ This main branch is intended to serve as the **project overview and final docume
 1. [Problem Statement](#1-problem-statement)
 2. [Background: SPTAG and KV Storage](#2-background-sptag-and-kv-storage)
 3. [Project Approach](#3-project-approach)
-4. [Progress and Accomplishments](#4-progress-and-accomplishments)
-5. [Benchmarking Overview](#5-benchmarking-overview)
+4. [What We Built](#4-what-we-built)
+5. [Results](#5-results)
 6. [Key Findings](#6-key-findings)
 7. [Repository Organization](#7-repository-organization)
-8. [Final Status and Future Work](#8-final-status-and-future-work)
+8. [Future Work](#8-future-work)
 
 ---
 
 ## 1) Problem Statement
 
-Modern RAG systems depend on fast vector search. Given a query embedding, the system must quickly find nearby vectors and retrieve the corresponding data, such as document chunks, metadata, posting lists, or other payloads. ANN libraries like SPTAG can efficiently search through high-dimensional vector indexes, but the search result is usually only an identifier. A separate storage layer must still retrieve the data associated with that identifier.
+Modern RAG systems depend on fast vector search. Given a query embedding, the
+system must quickly find nearby vectors and retrieve the corresponding data —
+document chunks, metadata, posting lists, or other payloads. ANN libraries like
+SPTAG search high-dimensional vector indexes efficiently, but the search result
+is only an identifier: a separate storage layer must retrieve the data
+associated with it.
 
-A simple local or in-memory KV store is not enough at larger scales because:
+A simple local or in-memory KV store is not enough at larger scales:
 
-1. **Scale:** large vector datasets and payloads can reach hundreds of gigabytes or more.
-2. **Persistence:** in-memory storage is lost after restarts and is not suitable for durable serving.
-3. **Concurrency:** many simultaneous search requests can create bottlenecks if all reads go through one local process or disk.
-4. **Fault tolerance:** production-style systems need storage that can survive failures and continue serving data.
+1. **Scale:** large vector datasets and payloads can reach hundreds of gigabytes.
+2. **Persistence:** in-memory storage is lost after restarts.
+3. **Concurrency:** many simultaneous searches bottleneck on one local process or disk.
+4. **Fault tolerance:** production systems must survive node failures.
 
-Our project investigates how distributed KV systems can support SPTAG-style ANN workloads and what tradeoffs appear when moving from local storage to distributed storage.
-
----
+This project asks: **can a distributed KV store back SPTAG-style ANN retrieval
+without an unacceptable latency penalty — and what does the read path have to
+look like for that to work?**
 
 ## 2) Background: SPTAG and KV Storage
 
-### What is SPTAG?
+[SPTAG](https://github.com/microsoft/SPTAG) (**Space Partition Tree And
+Graph**) is an ANN library that combines a space-partitioning tree (to narrow
+the search region quickly) with a relative neighborhood graph (for greedy
+traversal among nearby vectors), avoiding the dimensionality blow-up of
+quad/oct-trees.
 
-[SPTAG](https://github.com/microsoft/SPTAG) stands for **Space Partition Tree And Graph**. It is an ANN search library designed for fast similarity search over high-dimensional vectors.
-
-Traditional spatial data structures, such as quad-trees or oct-trees, split across dimensions and become inefficient as dimensionality grows. SPTAG avoids this dimensionality problem by combining two ideas:
-
-- a **space-partitioning tree** that quickly narrows the search region, and
-- a **relative neighborhood graph** that supports greedy traversal among nearby vectors.
-
-This two-stage design makes SPTAG practical for large vector-search workloads.
-
-### Why does SPTAG need KV storage?
-
-SPTAG can identify nearby vectors, but real RAG systems also need to fetch the content tied to those vectors. That content may include embeddings, posting lists, document chunks, or metadata. A KV store is a natural fit because each vector ID can map to the payload needed after ANN search.
-
-In this project, we explored how different KV backends behave when used with SPTAG-like workloads. 
-
----
+Its SPFresh disk-ANN path keeps **posting lists in an external store** keyed by
+vector ID — exactly the seam where a pluggable KV backend slots in: after the
+in-memory head index picks candidate postings, the engine fetches them from the
+posting store. That store is what we swap.
 
 ## 3) Project Approach
 
-Our project followed a benchmark-driven approach. Instead of only discussing distributed storage theoretically, we built and tested storage paths around SPTAG and compared how different backends behaved under similar benchmark settings.
+Benchmark-driven. We added swappable storage backends to SPTAG's SPFresh path,
+holding index and search parameters fixed so the **storage engine is the only
+variable**:
 
-The main storage backends explored were Aerospike and TiKV, however we additionally tested both RocksDB and FileIO:
-
-| Backend | Role in Project | Notes |
+| Backend | Role | Storage path |
 | --- | --- | --- |
-| FileIO | Local baseline | Simple file-based storage path used as a baseline. |
-| RocksDB | Embedded KV baseline | Local key-value store used to compare against distributed options. |
-| Aerospike | Distributed KV experiment | Explored as a low-latency distributed KV backend with NVMe-backed storage. |
-| TiKV | Distributed KV baseline | Explored as a distributed transactional KV option and comparison point. |
+| **FileIO** | Local baseline | Block-based file I/O on NVMe |
+| **RocksDB** | Embedded-KV baseline | Local LSM store on NVMe |
+| **Aerospike** | Distributed-KV experiment | NVMe-backed Aerospike over the network |
+| **TiKV** | Distributed-KV comparison | Transactional LSM store via PD/RawKV |
 
-The project began with interest in TiKV integration. Over time, the work shifted toward an optimization of Aeropsike alongside TiKV. (I need to add something else here im just not sure. )
+The project began with TiKV integration (Go sidecar over a Unix domain socket,
+later a PD/RawKV controller); measured coordination overhead then shifted the
+focus to optimizing an Aerospike read path, keeping TiKV as the
+stronger-consistency comparison point.
 
----
+## 4) What We Built
 
-## 4) Progress and Accomplishments
+- `AerospikeKeyValueIO` — a C++ storage backend implementing SPTAG's KV
+  interface against the Aerospike client (configured at runtime via
+  `SPTAG_AEROSPIKE_HOST/PORT/NAMESPACE/SET/BIN`), selected with
+  `Storage=AEROSPIKEIO` in the benchmark config.
+- A TiKV backend: `ExtraTiKVController` (C++) plus a Go sidecar (`tikv_uds/`)
+  speaking RawKV through PD.
+- Reproducible GCP infrastructure: scripts that provision a 3-node Aerospike
+  cluster on local NVMe SSDs (`storage-engine device`, replication-factor 2)
+  and an end-to-end benchmark workflow (`bench-aerospike.sh`, `bench-e2e.sh`,
+  `deploy-aerospike.sh` on the `aerospike-udf` branch).
+- Benchmark harness configs for all four backends (`benchmarks/*.ini`) driving
+  SPTAG's SPFresh benchmark on the SIFT1B/BigANN workflow.
+- Server-side compute experiments: Aerospike Lua UDF variants that move
+  distance-related work onto the storage nodes, plus client policy sweeps
+  (result JSONs committed under `SPTAG/results/` on the `aerospike-udf` branch).
 
-By the end of the project, we accomplished the following:
+## 5) Results
 
-- Built and ran the SPTAG benchmark environment.
-- Reproduced the SPFresh benchmark workflow inside a Docker-based setup.
-- Prepared benchmark configurations for different storage backends.
-- Deployed Aerospike nodes on Google Cloud Platform.
-- Created scripts and documentation for standing up backend infrastructure.
-- Modified SPTAG source paths to experiment with external KV storage.
-- Ran benchmarks using the SIFT1B / BigANN dataset workflow.
-- Compared local and distributed storage behavior using QPS, latency, and recall.
-- Identified that recall can remain consistent across backends when search/index settings are held constant, while throughput and latency are heavily affected by storage engine behavior and deployment topology.
-- Received mentor feedback that batching, `MultiGet`-style APIs, and server-side aggregation are important for improving distributed ANN serving performance.
+Headline three-way comparison: see the table at the top (2026-04-08 run,
+1M vectors). Highlights:
 
----
+- **Aerospike had the lowest tail latency of all backends** — p99 10.12 ms vs
+  12.14 ms for local RocksDB and 32.18 ms for the FileIO baseline — despite the
+  network round trip.
+- **Throughput was on par with local RocksDB** (2,872 vs 2,927 QPS) and ~2.4×
+  the FileIO baseline.
+- **Recall was identical (0.841)** across backends — the swap changes retrieval
+  performance only, not search quality.
+- **TiKV** (same config, separate run): 297 QPS at 53.5 ms mean — transactional
+  guarantees and gRPC/PD coordination dominate this read-heavy path.
+- **Naive server-side compute made things worse.** Later UDF experiments
+  (2026-04-25, JSONs on the `aerospike-udf` branch) sent per-posting work to the
+  server without batching: throughput dropped from 2,229 QPS (UDF off) to 1,415
+  (pairs encoding) and 739 (packed encoding). Round trips, not compute
+  placement, are the bottleneck — batched/`MultiGet`-style APIs are the right
+  lever (consistent with our mentor's guidance).
 
-## 5) Benchmarking Overview
-
-Our benchmark work focused on comparing storage backends under SPTAG's benchmark workflow. The goal was not only to find the fastest backend, but also to understand why the results looked the way they did.
-
-The benchmark setup used:
-
-- SPTAG's SPFresh benchmark path.
-- SIFT1B / BigANN-style vector data.
-- Local NVMe storage for dataset and index artifacts.
-- Backend-specific KV paths for retrieving stored payloads/postings.
-- Metrics such as QPS, latency, and recall.
-
-### High-Level Result Summary
-
-| Backend | General Outcome | Interpretation |
-| --- | --- | --- |
-| FileIO | Worked as a local baseline | Useful for comparison, but not distributed or fault tolerant. |
-| RocksDB | Strong local embedded performance | Performed well because it avoids network overhead and stays local. |
-| Aerospike | Demonstrated distributed KV integration | Showed that SPTAG can run with a distributed KV backend, but performance depends on batching and request path design. |
-| TiKV | Useful distributed comparison point | Helped frame tradeoffs around stronger consistency, LSM-based storage, and distributed read overhead. |
-
-> Final numeric results should be placed here once we agree on the exact values to present. (SIFT1M dataset, 10 batch. Result for last batch) 
->
-> | Backend | Search QPS | Mean Latency | Recall@K | Notes |
-> | --- | ---: | ---: | ---: | --- |
-> | FileIO | 1209.18 | 13.11 | 0.84 | Local baseline |
-> | RocksDB | 2466.42 | 6.43 | 0.84 | Embedded KV baseline |
-> | Aerospike | TBD | TBD | TBD | Distributed KV experiment |
-> | TiKV | 297.39 | 53.54 | 0.84 | Distributed KV comparison |
-
----
+Caveats we know about: 1,000 queries per measurement round; single-run numbers
+(no variance reported); the raw JSONs for the 04-08 run lived on the benchmark
+VM's NVMe — the committed artifacts are the run log in `RUN_BENCHMARKS.MD` and
+the April-25 result JSONs on the `aerospike-udf` branch.
 
 ## 6) Key Findings
 
-### 1. Distributed storage is not automatically faster
-
-A distributed KV store can improve scalability, persistence, and fault tolerance, but it also introduces network overhead. For ANN workloads, the storage path must be carefully designed so that distributed reads do not become the bottleneck.
-
-### 2. Batching is critical
-
-ANN search often needs to retrieve many related keys. Sending many individual requests can create unnecessary latency. A `MultiGet` or batched retrieval API is important because it reduces round trips and better matches the access pattern of graph-based vector search.
-
-### 3. Recall depends mostly on index/search settings
-
-When the same SPTAG index and search parameters are used, recall should remain mostly consistent across storage backends. The backend mainly affects how quickly the required data can be retrieved.
-
-### 4. Storage engine design matters
-
-Local embedded systems like RocksDB can perform well because they avoid network overhead. Distributed systems like Aerospike and TiKV offer different tradeoffs around latency, consistency, scaling, replication, and operational complexity.
-
-### 5. Backend integration needs clean layering
-
-One of the biggest lessons was that storage integration should be separated cleanly from the search logic. The code path should make it easy to swap backends, compare results, and avoid duplicating distance computations across the client and storage layer.
-
----
+1. **Distributed is not automatically slower for ANN retrieval.** With an
+   NVMe-backed, low-hop read path, a networked KV matched local embedded
+   storage on throughput and won on tail latency.
+2. **Batching is the lever that matters.** ANN search fetches many related
+   keys; per-key round trips dominate. A `MultiGet`-style batched API matches
+   the graph-traversal access pattern — our UDF results show what happens
+   without it.
+3. **Recall is a property of the index and search settings, not the store** —
+   storage can be optimized independently.
+4. **Storage-engine design matters:** embedded RocksDB wins on cold start
+   (9,612 initial QPS); Aerospike's tight read path keeps the latency
+   distribution narrow as the index grows; TiKV pays for transactions.
+5. **Clean layering pays off.** Keeping storage behind SPTAG's KV interface is
+   what made a four-backend comparison possible without touching search logic.
 
 ## 7) Repository Organization
 
-The repository is organized around a clean main branch and backend-specific implementation branches.
-
 ```text
 RAG_StormX/
-├── README.md                         # Main project overview and final documentation hub
-├── SPTAG/                            # SPTAG source tree and benchmark configs
-├── docs/                             # General project documentation and final presentation assets
-│   ├── project-overview.md           # High-level project explanation
-│   ├── benchmark-summary.md          # Final benchmark table and interpretation
-│   ├── architecture.md               # System architecture and design notes
-│   └── presentation-assets/          # Diagrams, screenshots, and figures for final slides
-├── results/                          # Final selected benchmark outputs or summaries
-└── branches:
-    ├── aerospike                     # Aerospike-specific implementation and setup
-    └── tikv                          # TiKV-specific implementation and setup
+├── README.md                  # this overview
+├── RUN_BENCHMARKS.MD          # full reproduction guide + results + run log
+├── SPTAG/                     # SPTAG source tree (Aerospike/TiKV backends added)
+│   └── AnnService/…/AerospikeKeyValueIO.*   # Aerospike storage backend (C++)
+├── benchmarks/                # per-backend benchmark .ini configs + TiKV compose
+├── aerospace_client/          # Aerospike smoke-test / persistence-check scripts
+├── tikv_uds/                  # TiKV Go sidecar (RawKV via PD)
+├── insert_test_index/         # sample index loader config
+└── docs/                      # benchmark and deployment screenshots
 ```
 
+Branches:
 
+- **`aerospike-udf`** — Aerospike UDF experiments, policy sweeps, committed
+  result JSONs (`SPTAG/results/`), and the GCP end-to-end automation
+  (`deploy-aerospike.sh`, `bench-aerospike.sh`, `bench-e2e.sh`).
+- **`FileIO-RocksDB_TiKV`** — local-backend and TiKV comparison work.
 
----
+## 8) Future Work
 
-## 8) Final Status and Future Work
-
-### Current Status
-
-The project successfully demonstrated that SPTAG can be benchmarked against multiple KV storage backends and that distributed KV integration is possible. The team also built cloud infrastructure, benchmark scripts, and documentation to compare backend behavior under ANN-style workloads.
-
-The main project outcome is not just one backend implementation, but a better understanding of what a storage layer for RAG-style ANN serving needs:
-
-- fast read latency,
-- efficient batched retrieval,
-- scalable storage capacity,
-- persistence,
-- fault tolerance,
-- and a clean interface between ANN search and KV retrieval.
-
-( I would love some further insight into what to add here on the tikv side as well. as well as the sectuion below. )
-
-### Future Work
-
-Important next steps include:
-
-1. Refactor backend integration code so storage logic is cleanly separated from SPTAG search logic.
-2. Implement a stronger `MultiGet` API that accepts query context and supports server-side filtering or aggregation.
-3. Reduce duplicated distance computation in the search path.
-4. Run benchmarks at higher thread counts to measure each backend near maximum throughput.
-5. Compare latency at maximum throughput, not only raw QPS.
-6. Improve fault-tolerance testing by measuring behavior under node failures.
-7. Finalize branch-specific documentation for Aerospike and TiKV.
+1. A real `MultiGet`/batched retrieval API with query context and server-side
+   filtering or aggregation.
+2. Remove duplicated distance computation between client and storage layer.
+3. Scale to 10M/100M vectors; report latency at max throughput, not just raw QPS.
+4. Multi-run benchmarks with variance, and committed raw JSONs for every run.
+5. Fault-tolerance measurement under node failure.
 
 ---
 
 ## Acknowledgments
 
-This project was developed for the EC528 final project sequence at Boston University. We thank our mentor, Qi Chen, for guidance on SPTAG, distributed KV design, benchmarking methodology, and performance optimization directions.
+Developed for the EC528 (Cloud Computing) final project at Boston University.
+We thank our mentor **Qi Chen** (Microsoft Research, SPTAG/SPANN) for guidance
+on SPTAG, distributed KV design, benchmarking methodology, and the
+batching/`MultiGet` optimization direction.
